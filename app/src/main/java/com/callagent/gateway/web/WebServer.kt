@@ -33,7 +33,9 @@ object WebServer {
         if (extsString != null) {
             try {
                 val json = JSONObject(extsString)
-                for (key in json.keys()) {
+                val iter = json.keys()
+                while (iter.hasNext()) {
+                    val key = iter.next() as String
                     extensions[key] = json.getString(key)
                 }
             } catch (e: Exception) {
@@ -53,7 +55,7 @@ object WebServer {
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         val json = JSONObject()
         extensions.forEach { (ext, pass) -> json.put(ext, pass) }
-        prefs.edit().putString("extensions", json.toString()).apply()
+        prefs.edit().putString("extensions", json.toString()).commit()
     }
 
     fun start(context: Context, port: Int = 8080) {

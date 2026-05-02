@@ -254,7 +254,7 @@ class SipClient(
         }
 
         // Incoming REGISTER from a SIP client (PBX/server mode) — act as a simple registrar
-        if (msg.isRequest && msg.method == "REGISTER") {
+        if (isLocalServer && msg.isRequest && msg.method == "REGISTER") {
             handleIncomingRegister(msg, address)
             return
         }
@@ -309,7 +309,7 @@ class SipClient(
         }
 
         val expires = msg.headers["expires"]?.trim()?.toLongOrNull() ?: 3600L
-        val contact = msg.headers["contact"] ?: "${address.first}:${address.second}"
+        val contact = msg.headers["contact"] ?: "<sip:${address.first}:${address.second}>"
 
         if (expires == 0L) {
             registeredClients.remove(fromUser)
@@ -317,23 +317,30 @@ class SipClient(
         } else {
             val expiry = System.currentTimeMillis() + expires * 1000L
             registeredClients[fromUser] = PbxClient(contact, expiry, address)
-            uiLog("PBX: $fromUser registered from $contact (${expires}s)")
+            uiLog("PBX: $fromUser registered from $address (${expires}s)")
         }
 
         // Respond 200 OK to the REGISTER
         val response = buildString {
-            appendLine("SIP/2.0 200 OK")
-            msg.headers["via"]?.let { appendLine("Via: $it") }
-            msg.headers["from"]?.let { appendLine("From: $it") }
-            msg.headers["to"]?.let { appendLine("To: $it") }
-            msg.headers["call-id"]?.let { appendLine("Call-ID: $it") }
-            msg.headers["cseq"]?.let { appendLine("CSeq: $it") }
-            if (expires > 0) {
-                appendLine("Contact: $contact")
-                appendLine("Expires: $expires")
+            append("SIP/2.0 200 OK\r\n")
+            msg.headers["via"]?.let { append("Via: $it\r\n") }
+            msg.headers["from"]?.let { append("From: $it\r\n") }
+            
+            // To header must have a tag in the response!
+            val toHeader = msg.headers["to"] ?: ""
+            if (toHeader.contains(";tag=")) {
+                append("To: $toHeader\r\n")
+            } else {
+                append("To: $toHeader;tag=pbx${System.currentTimeMillis()}\r\n")
             }
-            appendLine("Content-Length: 0")
-            appendLine()
+            
+            msg.headers["call-id"]?.let { append("Call-ID: $it\r\n") }
+            msg.headers["cseq"]?.let { append("CSeq: $it\r\n") }
+            
+            if (expires > 0) {
+                append("Contact: $contact;expires=$expires\r\n")
+            }
+            append("Content-Length: 0\r\n\r\n")
         }
         sendTo(response, address)
     }

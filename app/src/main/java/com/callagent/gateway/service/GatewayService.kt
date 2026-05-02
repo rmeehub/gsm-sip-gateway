@@ -123,7 +123,7 @@ class GatewayService : Service() {
     private fun checkNetworkChanged() {
         // Skip if no prior IP (first start handles its own init)
         if (currentLocalIp.isEmpty()) return
-        if (cfgServer.isEmpty()) return
+        if (cfgServer.isEmpty() && !cfgLocalServer) return
         // During an active call, skip network checks — cellular SUSPENDED
         // is normal and WiFi handles SIP/RTP traffic.
         val busy = orchestrator?.bridgeState?.let {
@@ -133,7 +133,7 @@ class GatewayService : Service() {
         val newIp = getLocalIp()
         if (newIp == "0.0.0.0") return
         val ipChanged = newIp != currentLocalIp
-        val notRegistered = sipClient?.registered != true
+        val notRegistered = if (cfgLocalServer) false else sipClient?.registered != true
         if (ipChanged || notRegistered) {
             if (ipChanged) broadcastLog("Network changed: $currentLocalIp → $newIp")
             else broadcastLog("Network recovered, reconnecting...")
@@ -262,6 +262,8 @@ class GatewayService : Service() {
 
         if (localServer) {
             WebServer.start(this, 8080)
+        } else {
+            WebServer.stop()
         }
 
         // Save for restart

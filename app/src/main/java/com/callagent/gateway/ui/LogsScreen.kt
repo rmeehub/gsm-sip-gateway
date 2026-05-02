@@ -82,7 +82,7 @@ fun LogsScreen(viewModel: MainViewModel, modifier: Modifier = Modifier) {
                         .padding(horizontal = 16.dp),
                     contentPadding = PaddingValues(bottom = 16.dp)
                 ) {
-                    items(systemLogs.reversed()) { log ->
+                    items(systemLogs) { log ->
                         Column(modifier = Modifier.padding(vertical = 8.dp)) {
                             Text(
                                 text = log,
