@@ -52,8 +52,9 @@ class MainActivity : ComponentActivity() {
         val port = prefs.getInt("port", 5060)
         val pass = prefs.getString("pass", "") ?: ""
         val localServer = prefs.getBoolean("local_server", false)
+        val usePublicIp = prefs.getBoolean("use_public_ip", false)
         
-        viewModel.toggleGateway(server, port, user, pass, localServer)
+        viewModel.toggleGateway(server, port, user, pass, localServer, usePublicIp)
     }
 
     // ── Permissions ─────────────────────────────────────

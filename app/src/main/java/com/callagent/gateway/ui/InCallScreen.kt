@@ -109,7 +109,7 @@ fun InCallScreen(viewModel: MainViewModel) {
                                 horizontalArrangement = Arrangement.SpaceEvenly
                             ) {
                                 row.forEach { key ->
-                                    DialpadButton(key) { GsmCallManager.playDtmfTone(key[0]) }
+                                    InCallDialpadButton(key) { GsmCallManager.playDtmfTone(key[0]) }
                                 }
                             }
                             Spacer(modifier = Modifier.height(12.dp))
@@ -187,7 +187,7 @@ fun InCallScreen(viewModel: MainViewModel) {
 }
 
 @Composable
-fun DialpadButton(text: String, onClick: () -> Unit) {
+fun InCallDialpadButton(text: String, onClick: () -> Unit) {
     Box(
         modifier = Modifier
             .size(72.dp)
