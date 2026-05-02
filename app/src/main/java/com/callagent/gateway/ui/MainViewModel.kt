@@ -47,10 +47,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val receiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             when (intent?.action) {
-                GatewayService.ACTION_STATUS_UPDATE -> {
+                GatewayService.STATUS_ACTION -> {
                     _gatewayState.value = _gatewayState.value.copy(
-                        status = intent.getStringExtra("status") ?: "IDLE",
-                        info = intent.getStringExtra("info") ?: "",
+                        status = intent?.getStringExtra("status") ?: "IDLE",
+                        info = intent?.getStringExtra("info") ?: "",
                         isRunning = true
                     )
                 }
@@ -61,7 +61,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     init {
         application.registerReceiver(
             receiver,
-            IntentFilter(GatewayService.ACTION_STATUS_UPDATE),
+            IntentFilter(GatewayService.STATUS_ACTION),
             Context.RECEIVER_EXPORTED
         )
         refreshLogs()
