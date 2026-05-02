@@ -22,7 +22,9 @@ data class GatewayState(
     val info: String = "Stopped",
     val incomingCalls: Int = 0,
     val outgoingCalls: Int = 0,
-    val isRunning: Boolean = false
+    val isRunning: Boolean = false,
+    val webHostInfo: String = "",
+    val activeCallDirection: String? = null // "IN", "OUT", or null
 )
 
 data class InCallState(
@@ -44,15 +46,28 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _callLogs = MutableStateFlow<List<CallLogEntry>>(emptyList())
     val callLogs: StateFlow<List<CallLogEntry>> = _callLogs.asStateFlow()
 
+    private val _systemLogs = MutableStateFlow<List<String>>(emptyList())
+    val systemLogs: StateFlow<List<String>> = _systemLogs.asStateFlow()
+
     private val receiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             when (intent?.action) {
                 GatewayService.STATUS_ACTION -> {
+                    val state = intent?.getStringExtra("state") ?: "IDLE"
+                    val info = intent?.getStringExtra("info") ?: ""
+                    val running = state != "STOPPED" && state != "ERROR"
                     _gatewayState.value = _gatewayState.value.copy(
-                        status = intent?.getStringExtra("status") ?: "IDLE",
-                        info = intent?.getStringExtra("info") ?: "",
-                        isRunning = true
+                        status = state,
+                        info = info,
+                        isRunning = running,
+                        activeCallDirection = if (state.contains("GSM_RINGING") || state.contains("GSM_ANSWERED")) "IN" 
+                                             else if (state.contains("GSM_DIALING") || state.contains("SIP_CALLING")) "OUT"
+                                             else null
                     )
+                }
+                GatewayService.LOG_ACTION -> {
+                    val msg = intent?.getStringExtra("msg") ?: return
+                    _systemLogs.value = (_systemLogs.value + msg).takeLast(100)
                 }
             }
         }
@@ -61,7 +76,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     init {
         application.registerReceiver(
             receiver,
-            IntentFilter(GatewayService.STATUS_ACTION),
+            IntentFilter().apply {
+                addAction(GatewayService.STATUS_ACTION)
+                addAction(GatewayService.LOG_ACTION)
+            },
             Context.RECEIVER_EXPORTED
         )
         refreshLogs()
@@ -92,7 +110,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (_gatewayState.value.isRunning) {
             val i = Intent(ctx, GatewayService::class.java).apply { action = GatewayService.ACTION_STOP }
             ctx.startService(i)
-            _gatewayState.value = _gatewayState.value.copy(isRunning = false, status = "IDLE", info = "Stopped")
         } else {
             val i = Intent(ctx, GatewayService::class.java).apply {
                 action = GatewayService.ACTION_START
@@ -103,7 +120,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 putExtra(GatewayService.EXTRA_LOCAL_SERVER, localServer)
             }
             ctx.startService(i)
-            _gatewayState.value = _gatewayState.value.copy(isRunning = true, status = "STARTING", info = "Connecting...")
+        }
+    }
+
+    fun importConfigFromUrl(url: String) {
+        viewModelScope.launch {
+            // Placeholder for URL import logic
+            // In a real app, we'd fetch JSON and update SharedPreferences
         }
     }
 

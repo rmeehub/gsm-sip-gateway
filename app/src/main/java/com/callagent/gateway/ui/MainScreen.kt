@@ -20,7 +20,7 @@ import androidx.compose.ui.Modifier
 
 @Composable
 fun MainScreen(viewModel: MainViewModel) {
-    var selectedTab by remember { mutableStateOf(0) }
+    var selectedTab by remember { mutableStateOf(1) }
 
     Scaffold(
         bottomBar = {

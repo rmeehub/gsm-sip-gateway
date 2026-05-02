@@ -1,19 +1,18 @@
 package com.callagent.gateway.ui
 
 import androidx.compose.foundation.layout.*
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.getValue
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import java.net.Inet4Address
+import java.net.NetworkInterface
 
 @Composable
 fun DashboardScreen(viewModel: MainViewModel, modifier: Modifier = Modifier) {
@@ -65,33 +64,87 @@ fun DashboardScreen(viewModel: MainViewModel, modifier: Modifier = Modifier) {
             }
         }
 
-        Spacer(modifier = Modifier.height(32.dp))
+        Spacer(modifier = Modifier.height(24.dp))
 
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceEvenly
+        // Call Direction Indicator
+        state.activeCallDirection?.let { direction ->
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)
+            ) {
+                Row(
+                    modifier = Modifier.padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = if (direction == "IN") Icons.Default.CallReceived else Icons.Default.CallMade,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onPrimaryContainer
+                    )
+                    Spacer(modifier = Modifier.width(16.dp))
+                    Text(
+                        text = if (direction == "IN") "Active Incoming Call" else "Active Outgoing Call",
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer
+                    )
+                }
+            }
+            Spacer(modifier = Modifier.height(24.dp))
+        }
+
+        // Web Hosting Info
+        val ip = remember { getLocalIpAddress() }
+        Card(
+            modifier = Modifier.fillMaxWidth()
         ) {
-            StatCard("Incoming", state.incomingCalls.toString())
-            StatCard("Outgoing", state.outgoingCalls.toString())
+            Column(modifier = Modifier.padding(16.dp)) {
+                Text("Web Management Interface", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    text = if (ip != null) "http://$ip:8080" else "Waiting for network...",
+                    fontSize = 18.sp,
+                    color = MaterialTheme.colorScheme.primary,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Text(
+                    text = "Access this URL from your PC to manage PBX",
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(24.dp))
+
+        // Recent Logs Section (Small)
+        Text(
+            text = "Recent Activity",
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier.align(Alignment.Start).padding(bottom = 8.dp)
+        )
+        val logs by viewModel.callLogs.collectAsState()
+        logs.take(3).forEach { log ->
+            CallLogItem(log)
+            Divider(color = MaterialTheme.colorScheme.surfaceVariant, thickness = 1.dp)
         }
     }
 }
 
-@Composable
-fun StatCard(title: String, value: String) {
-    Card(
-        modifier = Modifier.size(120.dp)
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(16.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center
-        ) {
-            Text(text = title, fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Spacer(modifier = Modifier.height(8.dp))
-            Text(text = value, fontSize = 32.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+private fun getLocalIpAddress(): String? {
+    try {
+        val en = NetworkInterface.getNetworkInterfaces()
+        while (en.hasMoreElements()) {
+            val intf = en.nextElement()
+            val enumIpAddr = intf.inetAddresses
+            while (enumIpAddr.hasMoreElements()) {
+                val inetAddress = enumIpAddr.nextElement()
+                if (!inetAddress.isLoopbackAddress && inetAddress is Inet4Address) {
+                    return inetAddress.hostAddress
+                }
+            }
         }
+    } catch (ex: Exception) {
+        ex.printStackTrace()
     }
+    return null
 }

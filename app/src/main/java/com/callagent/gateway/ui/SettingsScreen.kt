@@ -25,6 +25,8 @@ fun SettingsScreen(viewModel: MainViewModel, modifier: Modifier = Modifier) {
     var user by remember { mutableStateOf(prefs.getString("user", "") ?: "") }
     var pass by remember { mutableStateOf(prefs.getString("pass", "") ?: "") }
     var localServer by remember { mutableStateOf(prefs.getBoolean("local_server", false)) }
+    var autoconnect by remember { mutableStateOf(prefs.getBoolean("autoconnect", true)) }
+    var configUrl by remember { mutableStateOf("") }
     
     val state by viewModel.gatewayState.collectAsState()
 
@@ -41,37 +43,65 @@ fun SettingsScreen(viewModel: MainViewModel, modifier: Modifier = Modifier) {
             modifier = Modifier.padding(bottom = 24.dp)
         )
 
-        OutlinedTextField(
-            value = server,
-            onValueChange = { server = it },
-            label = { Text("SIP Server IP / Domain") },
-            modifier = Modifier.fillMaxWidth()
-        )
-        Spacer(modifier = Modifier.height(16.dp))
-        
-        OutlinedTextField(
-            value = port,
-            onValueChange = { port = it.filter { char -> char.isDigit() } },
-            label = { Text("Port (Default 5060)") },
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-            modifier = Modifier.fillMaxWidth()
-        )
-        Spacer(modifier = Modifier.height(16.dp))
-        
-        OutlinedTextField(
-            value = user,
-            onValueChange = { user = it },
-            label = { Text("Username") },
-            modifier = Modifier.fillMaxWidth()
-        )
-        Spacer(modifier = Modifier.height(16.dp))
-        
-        OutlinedTextField(
-            value = pass,
-            onValueChange = { pass = it },
-            label = { Text("Password") },
-            modifier = Modifier.fillMaxWidth()
-        )
+        if (!localServer) {
+            OutlinedTextField(
+                value = server,
+                onValueChange = { server = it },
+                label = { Text("SIP Server IP / Domain") },
+                modifier = Modifier.fillMaxWidth()
+            )
+            Spacer(modifier = Modifier.height(16.dp))
+            
+            OutlinedTextField(
+                value = port,
+                onValueChange = { port = it.filter { char -> char.isDigit() } },
+                label = { Text("Port (Default 5060)") },
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                modifier = Modifier.fillMaxWidth()
+            )
+            Spacer(modifier = Modifier.height(16.dp))
+            
+            OutlinedTextField(
+                value = user,
+                onValueChange = { user = it },
+                label = { Text("Username") },
+                modifier = Modifier.fillMaxWidth()
+            )
+            Spacer(modifier = Modifier.height(16.dp))
+            
+            OutlinedTextField(
+                value = pass,
+                onValueChange = { pass = it },
+                label = { Text("Password") },
+                modifier = Modifier.fillMaxWidth()
+            )
+            Spacer(modifier = Modifier.height(16.dp))
+
+            OutlinedTextField(
+                value = configUrl,
+                onValueChange = { configUrl = it },
+                label = { Text("Config URL (Import details)") },
+                modifier = Modifier.fillMaxWidth(),
+                trailingIcon = {
+                    TextButton(onClick = { viewModel.importConfigFromUrl(configUrl) }) {
+                        Text("IMPORT")
+                    }
+                }
+            )
+            Spacer(modifier = Modifier.height(24.dp))
+        }
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Switch(checked = autoconnect, onCheckedChange = { autoconnect = it })
+            Spacer(modifier = Modifier.width(16.dp))
+            Column {
+                Text("Auto-connect", fontWeight = FontWeight.SemiBold)
+                Text("Start gateway automatically on app launch", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
         Spacer(modifier = Modifier.height(16.dp))
 
         Row(
@@ -96,6 +126,7 @@ fun SettingsScreen(viewModel: MainViewModel, modifier: Modifier = Modifier) {
                     .putString("user", user)
                     .putString("pass", pass)
                     .putBoolean("local_server", localServer)
+                    .putBoolean("autoconnect", autoconnect)
                     .apply()
                 
                 viewModel.toggleGateway(

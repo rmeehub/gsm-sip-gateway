@@ -26,6 +26,10 @@ fun InCallScreen(viewModel: MainViewModel) {
     val state by viewModel.inCallState.collectAsState()
     var showDialpad by remember { mutableStateOf(false) }
 
+    LaunchedEffect(state.isActive) {
+        if (!state.isActive) showDialpad = false
+    }
+
     AnimatedVisibility(
         visible = state.isActive,
         enter = fadeIn(),
@@ -65,6 +69,24 @@ fun InCallScreen(viewModel: MainViewModel) {
                     color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f)
                 )
 
+                Spacer(modifier = Modifier.height(48.dp))
+                
+                // Contact Avatar Placeholder (OneUI Style)
+                Box(
+                    modifier = Modifier
+                        .size(120.dp)
+                        .clip(CircleShape)
+                        .background(MaterialTheme.colorScheme.surfaceVariant),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        Icons.Default.Person,
+                        contentDescription = null,
+                        modifier = Modifier.size(64.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+
                 Spacer(modifier = Modifier.weight(1f))
 
                 if (showDialpad) {
@@ -81,10 +103,14 @@ fun InCallScreen(viewModel: MainViewModel) {
                         ) {
                             row.forEach { key ->
                                 TextButton(onClick = { GsmCallManager.playDtmfTone(key[0]) }) {
-                                    Text(key, fontSize = 28.sp, color = MaterialTheme.colorScheme.onBackground)
+                                    Text(key, fontSize = 32.sp, color = MaterialTheme.colorScheme.onBackground, fontWeight = FontWeight.Normal)
                                 }
                             }
                         }
+                    }
+                    Spacer(modifier = Modifier.height(16.dp))
+                    TextButton(onClick = { showDialpad = false }) {
+                        Text("Hide Keypad", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
                     }
                     Spacer(modifier = Modifier.height(32.dp))
                 } else {
