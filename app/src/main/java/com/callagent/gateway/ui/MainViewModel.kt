@@ -88,7 +88,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun refreshLogs() {
         viewModelScope.launch {
-            _callLogs.value = CallLogStore.getEntries(getApplication())
+            _callLogs.value = CallLogStore.getEntries(getApplication()).reversed()
             val totals = CallLogStore.getTotals(getApplication())
             _gatewayState.value = _gatewayState.value.copy(
                 incomingCalls = totals.inCalls,
@@ -103,6 +103,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _callLogs.value = emptyList()
             _gatewayState.value = _gatewayState.value.copy(incomingCalls = 0, outgoingCalls = 0)
         }
+    }
+
+    fun clearSystemLogs() {
+        _systemLogs.value = emptyList()
     }
 
     fun toggleGateway(server: String, port: Int, user: String, pass: String, localServer: Boolean) {

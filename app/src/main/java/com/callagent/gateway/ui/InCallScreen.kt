@@ -5,6 +5,7 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
@@ -90,27 +91,41 @@ fun InCallScreen(viewModel: MainViewModel) {
                 Spacer(modifier = Modifier.weight(1f))
 
                 if (showDialpad) {
-                    val keys = listOf(
-                        listOf("1", "2", "3"),
-                        listOf("4", "5", "6"),
-                        listOf("7", "8", "9"),
-                        listOf("*", "0", "#")
-                    )
-                    keys.forEach { row ->
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceEvenly
-                        ) {
-                            row.forEach { key ->
-                                TextButton(onClick = { GsmCallManager.playDtmfTone(key[0]) }) {
-                                    Text(key, fontSize = 32.sp, color = MaterialTheme.colorScheme.onBackground, fontWeight = FontWeight.Normal)
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        val keys = listOf(
+                            listOf("1", "2", "3"),
+                            listOf("4", "5", "6"),
+                            listOf("7", "8", "9"),
+                            listOf("*", "0", "#")
+                        )
+                        keys.forEach { row ->
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceEvenly
+                            ) {
+                                row.forEach { key ->
+                                    DialpadButton(key) { GsmCallManager.playDtmfTone(key[0]) }
                                 }
                             }
+                            Spacer(modifier = Modifier.height(12.dp))
                         }
-                    }
-                    Spacer(modifier = Modifier.height(16.dp))
-                    TextButton(onClick = { showDialpad = false }) {
-                        Text("Hide Keypad", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
+                        
+                        Spacer(modifier = Modifier.height(24.dp))
+                        
+                        IconButton(
+                            onClick = { showDialpad = false },
+                            modifier = Modifier
+                                .size(56.dp)
+                                .clip(CircleShape)
+                                .background(MaterialTheme.colorScheme.surfaceVariant)
+                        ) {
+                            Icon(Icons.Default.KeyboardArrowDown, contentDescription = "Hide", modifier = Modifier.size(32.dp))
+                        }
                     }
                     Spacer(modifier = Modifier.height(32.dp))
                 } else {
@@ -172,11 +187,30 @@ fun InCallScreen(viewModel: MainViewModel) {
 }
 
 @Composable
+fun DialpadButton(text: String, onClick: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .size(72.dp)
+            .clip(CircleShape)
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+            .clickable { onClick() },
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text = text,
+            fontSize = 32.sp,
+            fontWeight = FontWeight.Normal,
+            color = MaterialTheme.colorScheme.onBackground
+        )
+    }
+}
+
+@Composable
 fun InCallButton(icon: ImageVector, label: String, isActive: Boolean, onClick: () -> Unit) {
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
         Box(
             modifier = Modifier
-                .size(64.dp)
+                .size(72.dp)
                 .clip(CircleShape)
                 .background(if (isActive) MaterialTheme.colorScheme.primary.copy(alpha = 0.2f) else MaterialTheme.colorScheme.surfaceVariant),
             contentAlignment = Alignment.Center
@@ -185,11 +219,12 @@ fun InCallButton(icon: ImageVector, label: String, isActive: Boolean, onClick: (
                 Icon(
                     imageVector = icon,
                     contentDescription = label,
-                    tint = if (isActive) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                    tint = if (isActive) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(28.dp)
                 )
             }
         }
         Spacer(modifier = Modifier.height(8.dp))
-        Text(text = label, fontSize = 12.sp, color = MaterialTheme.colorScheme.onBackground)
+        Text(text = label, fontSize = 13.sp, color = MaterialTheme.colorScheme.onBackground, fontWeight = FontWeight.Medium)
     }
 }

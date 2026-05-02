@@ -12,6 +12,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import java.net.Inet4Address
 import java.net.NetworkInterface
 
@@ -117,7 +119,46 @@ fun DashboardScreen(viewModel: MainViewModel, modifier: Modifier = Modifier) {
 
         Spacer(modifier = Modifier.height(24.dp))
 
-        // Recent Logs Section (Small)
+        Spacer(modifier = Modifier.height(24.dp))
+
+        // System Logs Section
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(text = "System Logs", fontWeight = FontWeight.Bold)
+            TextButton(onClick = { viewModel.clearSystemLogs() }) {
+                Text("Clear", fontSize = 12.sp)
+            }
+        }
+        
+        val systemLogs by viewModel.systemLogs.collectAsState()
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(200.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+        ) {
+            LazyColumn(
+                modifier = Modifier.padding(8.dp),
+                contentPadding = PaddingValues(bottom = 8.dp)
+            ) {
+                items(systemLogs.reversed()) { log ->
+                    Text(
+                        text = log,
+                        fontSize = 11.sp,
+                        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier.padding(vertical = 2.dp)
+                    )
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(24.dp))
+
+        // Recent Activity (Call Logs)
         Text(
             text = "Recent Activity",
             fontWeight = FontWeight.Bold,

@@ -155,23 +155,25 @@ object GsmCallManager {
                 listener?.onGsmCallActive(call)
             }
             Call.STATE_DISCONNECTED -> {
-                Log.i(TAG, "GSM call disconnected")
+                Log.i(TAG, "GSM call disconnected, state=$state")
                 
                 // Save Call Log
-                if (callStartTime > 0L) {
-                    val durationSec = (System.currentTimeMillis() - callStartTime) / 1000
-                    val number = call.details?.handle?.schemeSpecificPart ?: "unknown"
-                    val type = if (listener != null) "GATEWAY" else "STANDALONE"
-                    val entry = CallLogEntry(callDirection, number, callStartTime, durationSec, type)
-                    
-                    inCallService?.let { ctx ->
-                        CoroutineScope(Dispatchers.IO).launch {
-                            CallLogStore.addEntry(ctx, entry)
-                        }
+                val timestamp = if (callStartTime > 0L) callStartTime else System.currentTimeMillis()
+                val durationSec = if (callStartTime > 0L) (System.currentTimeMillis() - callStartTime) / 1000 else 0L
+                val number = call.details?.handle?.schemeSpecificPart ?: "unknown"
+                val type = if (listener != null) "GATEWAY" else "STANDALONE"
+                val entry = CallLogEntry(callDirection, number, timestamp, durationSec, type)
+                
+                // Use application context to avoid leaks/null issues
+                val context = inCallService?.applicationContext
+                context?.let { ctx ->
+                    CoroutineScope(Dispatchers.IO).launch {
+                        CallLogStore.addEntry(ctx, entry)
+                        Log.i(TAG, "Call log saved: $number ($callDirection, $durationSec s)")
                     }
                 }
+
                 callStartTime = 0L
-                
                 listener?.onGsmCallEnded(call)
                 if (activeCall == call) {
                     activeCall = null

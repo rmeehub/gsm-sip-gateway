@@ -249,7 +249,7 @@ class GatewayService : Service() {
         val password = intent?.getStringExtra(EXTRA_PASS) ?: prefs.getString("pass", "") ?: ""
         val localServer = intent?.getBooleanExtra(EXTRA_LOCAL_SERVER, prefs.getBoolean("local_server", false)) ?: prefs.getBoolean("local_server", false)
 
-        if (server.isEmpty() || username.isEmpty()) {
+        if (!localServer && (server.isEmpty() || username.isEmpty())) {
             Log.e(TAG, "Missing SIP configuration")
             broadcastLog("ERROR: Missing server or username")
             broadcastStatus("ERROR", "Missing SIP configuration")
@@ -425,9 +425,17 @@ class GatewayService : Service() {
         sip.onConnectionLost = { reconnect() }
 
         try {
-            sip.start()
-            broadcastLog("[v${BuildConfig.VERSION_NAME}] SIP client started, registering with $cfgServer:$cfgPort")
-            broadcastStatus("STARTING", "Registering with $cfgServer")
+            if (cfgLocalServer) {
+                broadcastLog("[v${BuildConfig.VERSION_NAME}] Local SIP PBX Mode active")
+                broadcastStatus("ONLINE", "PBX Active at http://${getLocalIp()}:8080")
+                // In PBX mode, we don't register to an external server.
+                // The SipClient should be in "listen" mode or acting as a registrar.
+                // For now, we just skip the registration step.
+            } else {
+                sip.start()
+                broadcastLog("[v${BuildConfig.VERSION_NAME}] SIP client started, registering with $cfgServer:$cfgPort")
+                broadcastStatus("STARTING", "Registering with $cfgServer")
+            }
         } catch (e: Exception) {
             Log.e(TAG, "Failed to start SIP client: ${e.message}", e)
             broadcastLog("ERROR: SIP start failed — ${e.message}")

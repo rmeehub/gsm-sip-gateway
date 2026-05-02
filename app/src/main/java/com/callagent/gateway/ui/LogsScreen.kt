@@ -20,19 +20,9 @@ import java.util.Locale
 
 @Composable
 fun LogsScreen(viewModel: MainViewModel, modifier: Modifier = Modifier) {
-    var selectedLogTab by remember { mutableStateOf(0) }
     val logs by viewModel.callLogs.collectAsState()
-    val systemLogs by viewModel.systemLogs.collectAsState()
 
     Column(modifier = modifier.fillMaxSize()) {
-        TabRow(selectedTabIndex = selectedLogTab) {
-            Tab(selected = selectedLogTab == 0, onClick = { selectedLogTab = 0 }) {
-                Text("Call History", modifier = Modifier.padding(16.dp))
-            }
-            Tab(selected = selectedLogTab == 1, onClick = { selectedLogTab = 1 }) {
-                Text("System Logs", modifier = Modifier.padding(16.dp))
-            }
-        }
 
         Row(
             modifier = Modifier
@@ -51,33 +41,15 @@ fun LogsScreen(viewModel: MainViewModel, modifier: Modifier = Modifier) {
             }
         }
 
-        if (selectedLogTab == 0) {
-            if (logs.isEmpty()) {
-                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Text("No call history", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-            } else {
-                LazyColumn(contentPadding = PaddingValues(bottom = 16.dp)) {
-                    items(logs) { log ->
-                        CallLogItem(log)
-                        Divider(color = MaterialTheme.colorScheme.surfaceVariant, thickness = 1.dp)
-                    }
-                }
+        if (logs.isEmpty()) {
+            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Text("No call history", color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         } else {
-            LazyColumn(
-                modifier = Modifier.fillMaxSize().padding(8.dp),
-                contentPadding = PaddingValues(bottom = 16.dp)
-            ) {
-                items(systemLogs.reversed()) { log ->
-                    Text(
-                        text = log,
-                        fontSize = 12.sp,
-                        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
-                        color = MaterialTheme.colorScheme.onSurface,
-                        modifier = Modifier.padding(vertical = 4.dp)
-                    )
-                    Divider(color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+            LazyColumn(contentPadding = PaddingValues(bottom = 16.dp)) {
+                items(logs) { log ->
+                    CallLogItem(log)
+                    Divider(color = MaterialTheme.colorScheme.surfaceVariant, thickness = 1.dp)
                 }
             }
         }
