@@ -4,11 +4,15 @@ import android.content.Context
 import org.json.JSONArray
 import org.json.JSONObject
 
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+
 data class CallLogEntry(
     val direction: String,  // "IN" or "OUT"
     val number: String,
     val timestamp: Long,    // millis since epoch (call start)
-    val durationSec: Long
+    val durationSec: Long,
+    val type: String = "GATEWAY" // "GATEWAY" or "STANDALONE"
 )
 
 object CallLogStore {
@@ -19,7 +23,7 @@ object CallLogStore {
     @Volatile
     private var cachedEntries: List<CallLogEntry>? = null
 
-    fun addEntry(context: Context, entry: CallLogEntry) {
+    suspend fun addEntry(context: Context, entry: CallLogEntry) = withContext(Dispatchers.IO) {
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val arr = JSONArray(prefs.getString(KEY, "[]"))
         val obj = JSONObject().apply {
@@ -27,14 +31,15 @@ object CallLogStore {
             put("num", entry.number)
             put("ts", entry.timestamp)
             put("dur", entry.durationSec)
+            put("type", entry.type)
         }
         arr.put(obj)
         prefs.edit().putString(KEY, arr.toString()).apply()
         cachedEntries = null // invalidate cache
     }
 
-    fun getEntries(context: Context): List<CallLogEntry> {
-        cachedEntries?.let { return it }
+    suspend fun getEntries(context: Context): List<CallLogEntry> = withContext(Dispatchers.IO) {
+        cachedEntries?.let { return@withContext it }
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val arr = JSONArray(prefs.getString(KEY, "[]"))
         val entries = (0 until arr.length()).map { i ->
@@ -43,11 +48,12 @@ object CallLogStore {
                 direction = obj.getString("dir"),
                 number = obj.getString("num"),
                 timestamp = obj.getLong("ts"),
-                durationSec = obj.getLong("dur")
+                durationSec = obj.getLong("dur"),
+                type = obj.optString("type", "GATEWAY")
             )
         }.reversed() // newest first
         cachedEntries = entries
-        return entries
+        return@withContext entries
     }
 
     data class Totals(
@@ -55,7 +61,7 @@ object CallLogStore {
         val outCalls: Int, val outDurationSec: Long
     )
 
-    fun getTotals(context: Context): Totals {
+    suspend fun getTotals(context: Context): Totals {
         val entries = getEntries(context)
         return Totals(
             inCalls = entries.count { it.direction == "IN" },
@@ -65,7 +71,7 @@ object CallLogStore {
         )
     }
 
-    fun clear(context: Context) {
+    suspend fun clear(context: Context) = withContext(Dispatchers.IO) {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             .edit().putString(KEY, "[]").apply()
         cachedEntries = null // invalidate cache

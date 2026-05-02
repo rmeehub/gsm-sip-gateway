@@ -113,6 +113,9 @@ data class DeviceProfile(
                 "/vendor/bin/tinymix",
                 "/system/bin/tinymix",
                 "/system/xbin/tinymix",
+                "/vendor/bin/alsa_amixer",
+                "/system/bin/alsa_amixer",
+                "/system/xbin/alsa_amixer"
             )
             try {
                 // Batch-check all paths in a single su call for speed
@@ -120,14 +123,14 @@ data class DeviceProfile(
                     "[ -x '$p' ] && echo 'FOUND:$p'"
                 }
                 val result = RootShell.execForOutput(
-                    "$checks; which tinymix 2>/dev/null | head -1",
+                    "$checks; which tinymix 2>/dev/null | head -1; which alsa_amixer 2>/dev/null | head -1",
                     timeoutMs = 3000
                 )
                 // Check explicit path matches first
                 for (line in result.lines()) {
                     if (line.startsWith("FOUND:")) {
                         val path = line.removePrefix("FOUND:")
-                        Log.i(TAG, "tinymix found: $path")
+                        Log.i(TAG, "tinymix/alsa_amixer found: $path")
                         return path
                     }
                 }
@@ -212,6 +215,10 @@ data class DeviceProfile(
                 board.contains("exynos9820") || hw.contains("exynos") && model.contains("sm-g970") ->
                     exynos9820()
 
+                // Redmi Note 5 / MSM8953
+                board.contains("msm8953") || hw.contains("qcom") && model.contains("vince") ->
+                    msm8953()
+
                 // Generic Qualcomm — try incall_music, skip WCD9304-specific controls
                 hw.contains("qcom") || hw.contains("qualcomm") ->
                     genericQualcomm()
@@ -228,6 +235,48 @@ data class DeviceProfile(
         }
 
         // ── Known device profiles ──
+
+        /** Redmi Note 5 Vince (Snapdragon 625 / MSM8953) */
+        fun msm8953() = DeviceProfile(
+            name = "MSM8953 (Redmi Note 5)",
+            mixerSetupCmd = buildString {
+                // Completely disconnect the physical mic so ONLY the injected audio is heard
+                append("tinymix 'DEC1 MUX' 'ZERO' 2>/dev/null; ")
+                append("tinymix 'IIR1 INP1 MUX' 'ZERO' 2>/dev/null; ")
+                
+                // Mute Earpiece and Speaker to prevent feedback
+                append("tinymix 'RX1 Digital Volume' 0 2>/dev/null; ")
+                append("tinymix 'RX2 Digital Volume' 0 2>/dev/null; ")
+                append("tinymix 'RX3 Digital Volume' 0 2>/dev/null; ")
+            },
+            mixerRestoreCmd = buildString {
+                // Restore the physical mic
+                append("tinymix 'DEC1 MUX' 'ADC1' 2>/dev/null; ")
+                append("tinymix 'IIR1 INP1 MUX' 'DEC1' 2>/dev/null; ")
+                
+                // Restore Speaker/Earpiece Volumes
+                append("tinymix 'RX1 Digital Volume' 84 2>/dev/null; ")
+                append("tinymix 'RX2 Digital Volume' 84 2>/dev/null; ")
+                append("tinymix 'RX3 Digital Volume' 84 2>/dev/null; ")
+            },
+            mixerIncallMusicCmd = buildString {
+                // Enable Incall Music injection for Qualcomm
+                append("tinymix 'Incall_Music Audio Mixer MultiMedia1' 1 2>/dev/null; ")
+                append("tinymix 'Incall_Music Audio Mixer MultiMedia2' 1 2>/dev/null; ")
+            },
+            mixerDiagGrep = "tinymix 2>&1 | grep -iE '(Voice Rx|Voice Tx|Incall_Music|DEC1 MUX|RX[1-3] Digital Volume)'",
+            musicVolPercent = 100, // Maximize volume for software multiplier
+            captureGain = 4,       // Boost capture by 4x for clear SIP audio
+            playbackGain = 4,      // Boost injection by 4x
+            noiseGateThreshold = 100,
+            echoGateThreshold = 300,
+            doubleTalkRatio = 1.5f,
+            requireSpeakerMode = true,
+            incallMusicParam = "incall_music_enabled",
+            voiceDownlinkWorks = false, // Must use VOICE_RECOGNITION
+            routeChangeDelayMs = 500,
+            appopsPropagationMs = 300,
+        )
 
         /** Samsung Galaxy S4 Mini (MSM8930 / WCD9304 codec) */
         fun msm8930() = DeviceProfile(

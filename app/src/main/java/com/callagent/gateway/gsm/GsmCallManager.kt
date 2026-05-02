@@ -10,6 +10,11 @@ import android.telecom.InCallService
 import android.util.Log
 import com.callagent.gateway.DeviceProfile
 import com.callagent.gateway.RootShell
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import com.callagent.gateway.service.CallLogStore
+import com.callagent.gateway.service.CallLogEntry
 
 /**
  * GSM call manager: answers/makes/hangs up GSM calls, tracks state.
@@ -38,6 +43,9 @@ object GsmCallManager {
     @Volatile var inCallService: InCallService? = null; private set
 
     @Volatile var listener: Listener? = null
+
+    private var callStartTime: Long = 0L
+    private var callDirection: String = "OUT"
 
     /** Optional callback for routing important audio diagnostics to the
      *  app log viewer (Settings tab).  Set by GatewayService. */
@@ -71,6 +79,7 @@ object GsmCallManager {
 
         when (call.state) {
             Call.STATE_RINGING -> {
+                callDirection = "IN"
                 Log.i(TAG, "Incoming GSM call from $number")
                 // Silence the ringtone immediately — this is a gateway device,
                 // not a user-facing phone.  The call will be auto-answered
@@ -81,6 +90,12 @@ object GsmCallManager {
                 } catch (e: Exception) {
                     Log.w(TAG, "Ringer silence failed: ${e.message}")
                 }
+                
+                // Mute vibration (Root)
+                if (listener != null) {
+                    RootShell.exec("cmd vibrator cancel 2>/dev/null", timeoutMs = 500)
+                }
+
                 if (listener != null) {
                     listener?.onIncomingGsmCall(call, number)
                 } else {
@@ -88,9 +103,11 @@ object GsmCallManager {
                 }
             }
             Call.STATE_DIALING, Call.STATE_CONNECTING -> {
+                callDirection = "OUT"
                 Log.i(TAG, "Outgoing GSM call to $number")
             }
             Call.STATE_ACTIVE -> {
+                if (callStartTime == 0L) callStartTime = System.currentTimeMillis()
                 Log.i(TAG, "GSM call active: $number")
                 configureAudioBridge()
                 listener?.onGsmCallActive(call)
@@ -113,11 +130,18 @@ object GsmCallManager {
 
         when (state) {
             Call.STATE_RINGING -> {
+                callDirection = "IN"
                 // Handle calls that arrive as STATE_NEW in onCallAdded and
                 // transition to RINGING via the callback.  Without this,
                 // the orchestrator never learns about the incoming call.
                 val number = call.details?.handle?.schemeSpecificPart ?: "unknown"
                 Log.i(TAG, "GSM call ringing: $number (via state change)")
+                
+                // Mute vibration (Root)
+                if (listener != null) {
+                    RootShell.exec("cmd vibrator cancel 2>/dev/null", timeoutMs = 500)
+                }
+
                 if (listener != null) {
                     listener?.onIncomingGsmCall(call, number)
                 } else {
@@ -125,12 +149,29 @@ object GsmCallManager {
                 }
             }
             Call.STATE_ACTIVE -> {
+                if (callStartTime == 0L) callStartTime = System.currentTimeMillis()
                 Log.i(TAG, "GSM call active")
                 configureAudioBridge()
                 listener?.onGsmCallActive(call)
             }
             Call.STATE_DISCONNECTED -> {
                 Log.i(TAG, "GSM call disconnected")
+                
+                // Save Call Log
+                if (callStartTime > 0L) {
+                    val durationSec = (System.currentTimeMillis() - callStartTime) / 1000
+                    val number = call.details?.handle?.schemeSpecificPart ?: "unknown"
+                    val type = if (listener != null) "GATEWAY" else "STANDALONE"
+                    val entry = CallLogEntry(callDirection, number, callStartTime, durationSec, type)
+                    
+                    inCallService?.let { ctx ->
+                        CoroutineScope(Dispatchers.IO).launch {
+                            CallLogStore.addEntry(ctx, entry)
+                        }
+                    }
+                }
+                callStartTime = 0L
+                
                 listener?.onGsmCallEnded(call)
                 if (activeCall == call) {
                     activeCall = null

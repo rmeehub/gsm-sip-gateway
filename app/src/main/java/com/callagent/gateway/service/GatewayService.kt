@@ -26,6 +26,10 @@ import com.callagent.gateway.bridge.CallOrchestrator
 import com.callagent.gateway.gsm.GsmCallManager
 import com.callagent.gateway.net.StunClient
 import com.callagent.gateway.sip.SipClient
+import com.callagent.gateway.web.WebServer
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import java.net.Inet4Address
 import java.net.NetworkInterface
 import java.util.concurrent.atomic.AtomicBoolean
@@ -149,6 +153,7 @@ class GatewayService : Service() {
         // Tear down existing client
         orchestrator?.stop()
         sipClient?.stop()
+        WebServer.stop()
         orchestrator = null
         sipClient = null
 
@@ -189,12 +194,14 @@ class GatewayService : Service() {
     }
 
     private fun reloadStats() {
-        val totals = CallLogStore.getTotals(this)
-        incomingCalls = totals.inCalls
-        incomingDurationSec = totals.inDurationSec
-        outgoingCalls = totals.outCalls
-        outgoingDurationSec = totals.outDurationSec
-        broadcastStatus(orchestrator?.bridgeState?.name ?: "IDLE", "Stats reloaded")
+        CoroutineScope(Dispatchers.IO).launch {
+            val totals = CallLogStore.getTotals(this@GatewayService)
+            incomingCalls = totals.inCalls
+            incomingDurationSec = totals.inDurationSec
+            outgoingCalls = totals.outCalls
+            outgoingDurationSec = totals.outDurationSec
+            broadcastStatus(orchestrator?.bridgeState?.name ?: "IDLE", "Stats reloaded")
+        }
     }
 
     private fun startGateway(intent: Intent?) {
@@ -226,11 +233,13 @@ class GatewayService : Service() {
 
         // Load call stats from persistent store so counters survive restarts
         onlineSince = 0L
-        val totals = CallLogStore.getTotals(this)
-        incomingCalls = totals.inCalls
-        incomingDurationSec = totals.inDurationSec
-        outgoingCalls = totals.outCalls
-        outgoingDurationSec = totals.outDurationSec
+        CoroutineScope(Dispatchers.IO).launch {
+            val totals = CallLogStore.getTotals(this@GatewayService)
+            incomingCalls = totals.inCalls
+            incomingDurationSec = totals.inDurationSec
+            outgoingCalls = totals.outCalls
+            outgoingDurationSec = totals.outDurationSec
+        }
         currentCallStart = 0L
 
         val prefs = getSharedPreferences("gateway", MODE_PRIVATE)
@@ -246,6 +255,10 @@ class GatewayService : Service() {
             broadcastStatus("ERROR", "Missing SIP configuration")
             stopSelf()
             return
+        }
+
+        if (localServer) {
+            WebServer.start(this, 8080)
         }
 
         // Save for restart
@@ -366,12 +379,9 @@ class GatewayService : Service() {
                     val dur = (System.currentTimeMillis() - currentCallStart) / 1000
                     if (currentCallIncoming) incomingDurationSec += dur
                     else outgoingDurationSec += dur
-                    CallLogStore.addEntry(this@GatewayService, CallLogEntry(
-                        direction = if (currentCallIncoming) "IN" else "OUT",
-                        number = currentCallNumber,
-                        timestamp = currentCallStart,
-                        durationSec = dur
-                    ))
+                    
+                    // Call Log saving is now handled by GsmCallManager for all calls
+                    
                     currentCallStart = 0L
                     currentCallNumber = ""
                 }
