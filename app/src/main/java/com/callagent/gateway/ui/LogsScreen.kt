@@ -20,9 +20,23 @@ import java.util.Locale
 
 @Composable
 fun LogsScreen(viewModel: MainViewModel, modifier: Modifier = Modifier) {
-    val logs by viewModel.callLogs.collectAsState()
+    var selectedTab by remember { mutableStateOf(0) }
+    val callLogs by viewModel.callLogs.collectAsState()
+    val systemLogs by viewModel.systemLogs.collectAsState()
 
     Column(modifier = modifier.fillMaxSize()) {
+        TabRow(selectedTabIndex = selectedTab) {
+            Tab(
+                selected = selectedTab == 0,
+                onClick = { selectedTab = 0 },
+                text = { Text("Calls") }
+            )
+            Tab(
+                selected = selectedTab == 1,
+                onClick = { selectedTab = 1 },
+                text = { Text("System") }
+            )
+        }
 
         Row(
             modifier = Modifier
@@ -32,24 +46,56 @@ fun LogsScreen(viewModel: MainViewModel, modifier: Modifier = Modifier) {
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
-                text = "Call History",
+                text = if (selectedTab == 0) "Call History" else "System Events",
                 fontSize = 24.sp,
                 fontWeight = FontWeight.Bold
             )
-            IconButton(onClick = { viewModel.clearLogs() }) {
-                Icon(Icons.Default.Delete, contentDescription = "Clear Logs", tint = MaterialTheme.colorScheme.error)
+            IconButton(onClick = { 
+                if (selectedTab == 0) viewModel.clearLogs() else viewModel.clearSystemLogs() 
+            }) {
+                Icon(Icons.Default.Delete, contentDescription = "Clear", tint = MaterialTheme.colorScheme.error)
             }
         }
 
-        if (logs.isEmpty()) {
-            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Text("No call history", color = MaterialTheme.colorScheme.onSurfaceVariant)
+        if (selectedTab == 0) {
+            if (callLogs.isEmpty()) {
+                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Text("No call history", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            } else {
+                LazyColumn(modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 16.dp)) {
+                    items(callLogs) { log ->
+                        CallLogItem(log)
+                        Divider(color = MaterialTheme.colorScheme.surfaceVariant, thickness = 1.dp)
+                    }
+                }
             }
         } else {
-            LazyColumn(contentPadding = PaddingValues(bottom = 16.dp)) {
-                items(logs) { log ->
-                    CallLogItem(log)
-                    Divider(color = MaterialTheme.colorScheme.surfaceVariant, thickness = 1.dp)
+            if (systemLogs.isEmpty()) {
+                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Text("No system events", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            } else {
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(horizontal = 16.dp),
+                    contentPadding = PaddingValues(bottom = 16.dp)
+                ) {
+                    items(systemLogs.reversed()) { log ->
+                        Column(modifier = Modifier.padding(vertical = 8.dp)) {
+                            Text(
+                                text = log,
+                                fontSize = 12.sp,
+                                fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Divider(
+                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                                modifier = Modifier.padding(top = 8.dp)
+                            )
+                        }
+                    }
                 }
             }
         }

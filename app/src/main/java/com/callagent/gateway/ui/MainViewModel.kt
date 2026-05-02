@@ -92,12 +92,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             Context.RECEIVER_EXPORTED
         )
         refreshLogs()
+        // Drain any logs that accumulated while the UI was not in the foreground
+        val buffered = GatewayService.drainLogBuffer()
+        if (buffered.isNotEmpty()) {
+            _systemLogs.value = buffered
+        }
         pollInCallState()
     }
 
     fun refreshLogs() {
         viewModelScope.launch {
-            _callLogs.value = CallLogStore.getEntries(getApplication()).reversed()
+            _callLogs.value = CallLogStore.getEntries(getApplication())
             val totals = CallLogStore.getTotals(getApplication())
             _gatewayState.value = _gatewayState.value.copy(
                 incomingCalls = totals.inCalls,

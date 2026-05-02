@@ -188,10 +188,7 @@ fun DashboardScreen(viewModel: MainViewModel, modifier: Modifier = Modifier) {
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Text(text = "System Logs", fontWeight = FontWeight.Bold)
-            TextButton(onClick = { viewModel.clearSystemLogs() }) {
-                Text("Clear", fontSize = 12.sp)
-            }
+            Text(text = "Recent Logs", fontWeight = FontWeight.Bold)
         }
         
         val systemLogs by viewModel.systemLogs.collectAsState()

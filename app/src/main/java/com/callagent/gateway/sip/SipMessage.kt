@@ -22,6 +22,9 @@ class SipMessage private constructor(
     val requestUri: String?
         get() = if (isRequest) startLine.split(" ").getOrNull(1) else null
 
+    val requestUriUser: String?
+        get() = requestUri?.let { extractUser(it) }
+
     fun header(name: String): String? =
         headers[name.lowercase()]
 
@@ -199,8 +202,33 @@ class SipMessage private constructor(
 
 /** Builder for constructing SIP messages */
 object SipBuilder {
-    private fun branch(): String = "z9hG4bK${(100000000..999999999).random()}"
+    @Volatile var lastBranch: String = ""
+        private set
+
+    private fun branch(): String {
+        lastBranch = "z9hG4bK${(100000000..999999999).random()}"
+        return lastBranch
+    }
+    
     private fun tag(): String = "gw${(100000000..999999999).random()}"
+
+    /** Build a generic SIP response (e.g. 486 Busy, 603 Decline) */
+    fun response(
+        msg: SipMessage,
+        statusCode: Int,
+        statusText: String,
+        toTag: String? = null
+    ): String = buildString {
+        append("SIP/2.0 $statusCode $statusText\r\n")
+        append("Via: ${msg.via}\r\n")
+        val to = msg.to ?: ""
+        val toWithTag = if (toTag != null && !to.contains(";tag=")) "$to;tag=$toTag" else to
+        append("To: $toWithTag\r\n")
+        append("From: ${msg.from}\r\n")
+        append("Call-ID: ${msg.callId}\r\n")
+        append("CSeq: ${msg.cseq}\r\n")
+        append("Content-Length: 0\r\n\r\n")
+    }
 
     fun register(
         username: String, domain: String, serverPort: Int,

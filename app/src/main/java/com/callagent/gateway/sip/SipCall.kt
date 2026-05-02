@@ -18,6 +18,11 @@ class SipCall(
     var state: State = State.TRYING
         private set
 
+    /** HTTP-style status code that caused termination (e.g. 486 Busy, 603 Decline).
+     *  0 means not terminated, or terminated by BYE (normal hangup). */
+    @Volatile var terminationCode: Int = 0
+        private set
+
     /** Set when any SIP response is received — stops INVITE retransmission (Timer A) */
     @Volatile var responseReceived = false
 
@@ -59,6 +64,11 @@ class SipCall(
 
     // Original INVITE (for building responses)
     var originalInvite: SipMessage? = null
+
+    /** Via header from the original outbound INVITE — needed to build CANCEL */
+    var originalInviteVia: String? = null
+    /** CSeq number from the original outbound INVITE — needed to build CANCEL */
+    var originalInviteCseq: Int = 0
 
     var listener: Listener? = null
 
@@ -185,7 +195,9 @@ class SipCall(
                     Log.i(TAG, "Ignoring ${msg.statusCode} — call already answered (CSeq: ${msg.cseq})")
                     return true
                 }
-                sipClient.logListener?.invoke("INVITE rejected: ${msg.statusCode} (call $callId)")
+                val code = msg.statusCode ?: 0
+                sipClient.logListener?.invoke("INVITE rejected: $code (call $callId)")
+                terminationCode = code
                 state = State.TERMINATED
                 listener?.onCallTerminated(this)
                 return true
@@ -234,20 +246,58 @@ class SipCall(
         Log.d(TAG, "Sent ACK for call $callId (CSeq: $cseq)")
     }
 
-    /** Send BYE to terminate the call */
+    /** Terminate the call: sends CANCEL if pre-answer outbound, 486 Busy if pre-answer inbound, else BYE */
     fun hangup() {
         if (state == State.TERMINATED) return
-        val uri = remoteContactUri ?: "sip:${sipClient.serverDomain}:${sipClient.serverPort}"
+        val preAnswerState = state
+        state = State.TERMINATED
 
+        val serverAddr = remoteContactAddress ?: sipClient.serverAddress
+
+        if (direction == Direction.OUTBOUND && (preAnswerState == State.TRYING || preAnswerState == State.RINGING || !responseReceived)) {
+            // OUTBOUND Pre-answer: must use CANCEL (RFC 3261 §9).
+            val uri = remoteContactUri ?: "sip:${sipClient.serverDomain}:${sipClient.serverPort}"
+            val cancelCseq = originalInviteCseq.takeIf { it > 0 } ?: (localCseq - 1).coerceAtLeast(1)
+            val via = originalInviteVia
+            if (via != null) {
+                val cancel = SipBuilder.cancel(
+                    uri, via, fromHeader, toHeader,
+                    callId, cancelCseq,
+                    sipClient.username, sipClient.publicIp, sipClient.localPort
+                )
+                sipClient.sendResponse(cancel, serverAddr)
+                Log.i(TAG, "Sent CANCEL for outbound call $callId")
+            } else {
+                Log.w(TAG, "No Via stored for CANCEL, falling back to BYE for call $callId")
+                sendBye(serverAddr)
+            }
+        } else if (direction == Direction.INBOUND && preAnswerState == State.RINGING) {
+            // INBOUND Pre-answer: send 486 Busy Here or 603 Decline
+            val invite = originalInvite
+            if (invite != null) {
+                val busy = SipBuilder.response(invite, 486, "Busy Here", localTag)
+                sipClient.sendResponse(busy, serverAddr)
+                Log.i(TAG, "Sent 486 Busy for inbound call $callId")
+            } else {
+                Log.w(TAG, "No original INVITE to reject inbound call $callId")
+            }
+        } else {
+            // Established call: send BYE
+            sendBye(serverAddr)
+        }
+
+        listener?.onCallTerminated(this)
+    }
+
+    private fun sendBye(serverAddr: Pair<String, Int>) {
+        val uri = remoteContactUri ?: "sip:${sipClient.serverDomain}:${sipClient.serverPort}"
         val bye = SipBuilder.bye(
             uri, fromHeader, toHeader,
             callId, localCseq++,
             sipClient.username, sipClient.publicIp, sipClient.localPort
         )
-        sipClient.sendResponse(bye, remoteContactAddress ?: sipClient.serverAddress)
-        state = State.TERMINATED
+        sipClient.sendResponse(bye, serverAddr)
         Log.i(TAG, "Sent BYE for call $callId")
-        listener?.onCallTerminated(this)
     }
 
     companion object {

@@ -430,11 +430,14 @@ class GatewayService : Service() {
 
         try {
             if (cfgLocalServer) {
-                broadcastLog("[v${BuildConfig.VERSION_NAME}] Local SIP PBX Mode active")
+                // In PBX/server mode: bind the UDP socket and run the receive loop
+                // so Zoiper / softphones can REGISTER and receive calls.
+                // We do NOT send a REGISTER ourselves — we ARE the registrar.
+                sip.startListenOnly()
+                // Wire live client list to WebUI
+                WebServer.getRegisteredClients = { sip.registeredClients }
+                broadcastLog("[v${BuildConfig.VERSION_NAME}] Local SIP PBX Mode — listening on :5060")
                 broadcastStatus("ONLINE", "PBX Active at http://${getLocalIp()}:8080")
-                // In PBX mode, we don't register to an external server.
-                // The SipClient should be in "listen" mode or acting as a registrar.
-                // For now, we just skip the registration step.
             } else {
                 sip.start()
                 broadcastLog("[v${BuildConfig.VERSION_NAME}] SIP client started, registering with $cfgServer:$cfgPort")

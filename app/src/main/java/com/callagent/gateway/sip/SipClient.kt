@@ -86,6 +86,38 @@ class SipClient(
         }, "SIP-Register").start()
     }
 
+    /**
+     * Listen-only mode for Local PBX: bind the socket and handle incoming SIP
+     * packets (REGISTER, INVITE from clients) without sending REGISTER ourselves.
+     */
+    @Synchronized
+    fun startListenOnly() {
+        if (running.get()) return
+        running.set(true)
+        callIdBase = "${System.currentTimeMillis() / 1000}@$localIp"
+        // In listen-only mode we don't need to resolve an external server DNS
+        try {
+            val s = java.net.DatagramSocket(null)
+            s.reuseAddress = true
+            s.bind(InetSocketAddress(localPort))
+            s.soTimeout = 5000
+            s.receiveBufferSize = 65535
+            s.sendBufferSize = 65535
+            socket = s
+            sendExecutor = java.util.concurrent.Executors.newSingleThreadExecutor { r ->
+                Thread(r, "SIP-Send")
+            }
+            uiLog("PBX socket bound on :$localPort")
+        } catch (e: Exception) {
+            uiLog("Failed to bind PBX socket: ${e.message}")
+            return
+        }
+        Thread({
+            try { receiveLoop() }
+            catch (e: Exception) { uiLog("PBX receive loop crashed: ${e.message}") }
+        }, "SIP-PBX-Recv").start()
+    }
+
     @Synchronized
     fun stop() {
         running.set(false)
@@ -218,6 +250,12 @@ class SipClient(
             }
         }
 
+        // Incoming REGISTER from a SIP client (PBX/server mode) — act as a simple registrar
+        if (msg.isRequest && msg.method == "REGISTER") {
+            handleIncomingRegister(msg, address)
+            return
+        }
+
         // New INVITE
         if (msg.isRequest && msg.method == "INVITE") {
             handleIncomingInvite(msg, address)
@@ -248,6 +286,59 @@ class SipClient(
             sendTo(ok, address)
             return
         }
+    }
+
+    // ── PBX Registrar ───────────────────────────────────
+
+    data class PbxClient(val contact: String, val expiry: Long, val address: Pair<String, Int>)
+
+    /** Map of extension → PbxClient for PBX mode */
+    val registeredClients = ConcurrentHashMap<String, PbxClient>()
+
+    private fun handleIncomingRegister(msg: SipMessage, address: Pair<String, Int>) {
+        val fromUser = msg.from?.let { extractUser(it) } ?: "unknown"
+        
+        // Ensure extension exists in WebServer config
+        if (!com.callagent.gateway.web.WebServer.extensionExists(fromUser)) {
+            uiLog("PBX: Rejected unknown extension $fromUser")
+            sendTo(com.callagent.gateway.sip.SipBuilder.response(msg, 404, "Not Found"), address)
+            return
+        }
+
+        val expires = msg.headers["expires"]?.trim()?.toLongOrNull() ?: 3600L
+        val contact = msg.headers["contact"] ?: "${address.first}:${address.second}"
+
+        if (expires == 0L) {
+            registeredClients.remove(fromUser)
+            uiLog("PBX: $fromUser unregistered")
+        } else {
+            val expiry = System.currentTimeMillis() + expires * 1000L
+            registeredClients[fromUser] = PbxClient(contact, expiry, address)
+            uiLog("PBX: $fromUser registered from $contact (${expires}s)")
+        }
+
+        // Respond 200 OK to the REGISTER
+        val response = buildString {
+            appendLine("SIP/2.0 200 OK")
+            msg.headers["via"]?.let { appendLine("Via: $it") }
+            msg.headers["from"]?.let { appendLine("From: $it") }
+            msg.headers["to"]?.let { appendLine("To: $it") }
+            msg.headers["call-id"]?.let { appendLine("Call-ID: $it") }
+            msg.headers["cseq"]?.let { appendLine("CSeq: $it") }
+            if (expires > 0) {
+                appendLine("Contact: $contact")
+                appendLine("Expires: $expires")
+            }
+            appendLine("Content-Length: 0")
+            appendLine()
+        }
+        sendTo(response, address)
+    }
+
+    private fun extractUser(header: String): String {
+        // Extract username from SIP URI like "sip:100@192.168.x.x" or "<sip:100@...>"
+        val match = Regex("""sip:([^@>]+)@""").find(header)
+        return match?.groupValues?.get(1) ?: header
     }
 
     // ── Registration ────────────────────────────────────
@@ -381,10 +472,27 @@ class SipClient(
             callerIdNumber = callerIdNumber,
             callerIdName = callerIdName
         )
+        
+        // Store for potential CANCEL later
+        call.originalInviteVia = "SIP/2.0/UDP $publicIp:$localPort;branch=${SipBuilder.lastBranch};rport"
+        call.originalInviteCseq = call.localCseq - 1
 
         activeCalls[callId] = call
-        sendTo(invite, serverAddress)
-        Log.i(TAG, "Sent INVITE to $targetExtension (call-id=$callId)")
+        
+        val targetAddress = if (isLocalServer) {
+            // In PBX mode, send to the registered client's address
+            val client = registeredClients[targetExtension]
+            if (client == null) {
+                Log.e(TAG, "PBX: Cannot call $targetExtension, not registered!")
+                return call
+            }
+            client.address
+        } else {
+            serverAddress
+        }
+        
+        sendTo(invite, targetAddress)
+        Log.i(TAG, "Sent INVITE to $targetExtension (call-id=$callId) at $targetAddress")
 
         // RFC 3261 Timer A: retransmit INVITE over UDP until any response is received.
         // Intervals: 500ms, 1s, 2s, 4s (capped at T2=4s). Stops immediately when
@@ -398,7 +506,7 @@ class SipClient(
                 if (call.responseReceived) break
                 if (!activeCalls.containsKey(callId)) break
                 Log.i(TAG, "INVITE retransmit #$i for $callId (${delay}ms)")
-                sendTo(invite, serverAddress)
+                sendTo(invite, targetAddress)
                 delay = minOf(delay * 2, maxDelay)
             }
         }, "INVITE-Retransmit").start()

@@ -114,20 +114,17 @@ fun InCallScreen(viewModel: MainViewModel) {
                             }
                             Spacer(modifier = Modifier.height(12.dp))
                         }
-                        
-                        Spacer(modifier = Modifier.height(24.dp))
-                        
+                        Spacer(modifier = Modifier.height(8.dp))
                         IconButton(
                             onClick = { showDialpad = false },
                             modifier = Modifier
-                                .size(56.dp)
+                                .size(48.dp)
                                 .clip(CircleShape)
                                 .background(MaterialTheme.colorScheme.surfaceVariant)
                         ) {
-                            Icon(Icons.Default.KeyboardArrowDown, contentDescription = "Hide", modifier = Modifier.size(32.dp))
+                            Icon(Icons.Default.KeyboardArrowDown, contentDescription = "Hide Dialpad", modifier = Modifier.size(28.dp))
                         }
                     }
-                    Spacer(modifier = Modifier.height(32.dp))
                 } else {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -142,8 +139,8 @@ fun InCallScreen(viewModel: MainViewModel) {
                         InCallButton(
                             icon = Icons.Default.Dialpad,
                             label = "Keypad",
-                            isActive = showDialpad,
-                            onClick = { showDialpad = !showDialpad }
+                            isActive = false,
+                            onClick = { showDialpad = true }
                         )
                         InCallButton(
                             icon = Icons.Default.VolumeUp,
@@ -152,12 +149,15 @@ fun InCallScreen(viewModel: MainViewModel) {
                             onClick = { viewModel.toggleSpeaker() }
                         )
                     }
-                    Spacer(modifier = Modifier.height(64.dp))
                 }
 
+                Spacer(modifier = Modifier.height(32.dp))
+
+                // End call row — always visible regardless of dialpad state
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceEvenly
+                    horizontalArrangement = Arrangement.SpaceEvenly,
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
                     if (state.callState == Call.STATE_RINGING) {
                         FloatingActionButton(
@@ -166,21 +166,20 @@ fun InCallScreen(viewModel: MainViewModel) {
                             modifier = Modifier.size(72.dp),
                             shape = CircleShape
                         ) {
-                            Icon(Icons.Default.CallEnd, contentDescription = "Answer", tint = Color.White)
+                            Icon(Icons.Default.Call, contentDescription = "Answer", tint = Color.White, modifier = Modifier.size(32.dp))
                         }
                     }
-
                     FloatingActionButton(
                         onClick = { viewModel.hangup() },
                         containerColor = MaterialTheme.colorScheme.error,
                         modifier = Modifier.size(72.dp),
                         shape = CircleShape
                     ) {
-                        Icon(Icons.Default.CallEnd, contentDescription = "End Call", tint = Color.White)
+                        Icon(Icons.Default.CallEnd, contentDescription = "End Call", tint = Color.White, modifier = Modifier.size(32.dp))
                     }
                 }
-                
-                Spacer(modifier = Modifier.height(64.dp))
+
+                Spacer(modifier = Modifier.height(48.dp))
             }
         }
     }

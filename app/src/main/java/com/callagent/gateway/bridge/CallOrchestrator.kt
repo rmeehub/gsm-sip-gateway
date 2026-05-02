@@ -150,13 +150,13 @@ class CallOrchestrator(
             return
         }
 
-        val gsmDest = call.gsmForwardNumber
-        if (gsmDest != null) {
-            // OUTBOUND flow: Asterisk wants us to dial a GSM number
+        val gsmDest = call.gsmForwardNumber ?: call.originalInvite?.requestUriUser
+        if (gsmDest != null && gsmDest != sipClient.username) {
+            // OUTBOUND flow: Asterisk or Zoiper wants us to dial a GSM number
             handleOutboundFlow(call, gsmDest)
         } else {
-            // Unexpected SIP call without forward header — answer anyway
-            Log.w(TAG, "SIP INVITE without X-GSM-Forward header, answering directly")
+            // Unexpected SIP call without forward header or dialed our own extension — answer anyway
+            Log.w(TAG, "SIP INVITE without destination number, answering directly")
             val rtpPort = allocateRtpPort()
             call.listener = this
             call.accept(rtpPort)
@@ -166,8 +166,24 @@ class CallOrchestrator(
 
     /** Handles termination from both SipClient.Listener and SipCall.Listener */
     override fun onCallTerminated(call: SipCall) {
-        Log.i(TAG, "SIP call terminated: ${call.callId} (bridge=$bridgeState, retries=$sipCallRetries)")
+        Log.i(TAG, "SIP call terminated: ${call.callId} (bridge=$bridgeState, retries=$sipCallRetries, code=${call.terminationCode})")
         if (call != activeSipCall) return
+
+        // User-rejection codes: 486 Busy Here, 603 Decline, 480 Temporarily Unavailable, 404 Not Found
+        // Do NOT retry these — the user actively rejected the call.
+        val isUserDecline = call.terminationCode in listOf(486, 603, 480, 404, 487)
+        if (isUserDecline) {
+            val reason = when (call.terminationCode) {
+                486 -> "SIP client busy"
+                603 -> "Call declined by SIP client"
+                480 -> "SIP client unavailable"
+                487 -> "Call cancelled"
+                else -> "SIP call rejected (${call.terminationCode})"
+            }
+            Log.i(TAG, "User decline (${call.terminationCode}) — tearing down, no retry")
+            tearDown(reason)
+            return
+        }
 
         // If GSM is still ringing and we haven't exhausted retries, try again.
         // Transient network issues or socket races can kill the first SIP attempt.

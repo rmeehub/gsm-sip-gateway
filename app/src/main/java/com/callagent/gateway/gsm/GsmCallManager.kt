@@ -289,7 +289,7 @@ object GsmCallManager {
     /** Configure audio for GSM↔SIP bridge using the active device profile. */
     private fun configureAudioBridge() {
         if (listener == null) return // Standalone mode: let Android handle audio routing natively
-        
+
         try {
             // Run ABOX/ALSA discovery on first call for diagnostics
             runMixerDiscovery()
@@ -297,26 +297,29 @@ object GsmCallManager {
             inCallService?.let { service ->
                 val audioManager = service.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
 
-                // Samsung HAL params (incall_music_enabled, g_call_path, etc.)
-                // are NOT set here — they fire in RtpSession.enableIncallMusic()
-                // AFTER the AudioRecord is running.  Setting them before capture
-                // kills VOICE_CALL capture (confirmed v2.8.33).
-
+                // GATEWAY MODE: Route to EARPIECE so the internal mic+speaker
+                // handle the GSM audio path directly. This is the correct path
+                // for bridging — GSM voice flows through the earpiece hardware
+                // (modem → ear speaker) and we capture it via VOICE_CALL source.
+                // Using SPEAKER here causes: loud bleed into mic → echo for caller,
+                // and AudioRecord may capture speaker output instead of modem audio.
+                // Only override to speaker if the device profile specifically requires it
+                // for hardware-level audio injection (some MSM/Exynos quirks).
                 if (profile.requireSpeakerMode) {
+                    // Legacy path: device profile mandates speaker for correct HAL routing
                     service.setAudioRoute(CallAudioState.ROUTE_SPEAKER)
+                    appLog("Audio bridge: SPEAKER (required by device profile)")
+                } else {
+                    // Default path: earpiece — cleanest audio with no echo
+                    service.setAudioRoute(CallAudioState.ROUTE_EARPIECE)
+                    appLog("Audio bridge: EARPIECE (internal mic + speaker)")
                 }
 
                 audioManager?.let { am ->
-                    // Do NOT set isMicrophoneMute = true here!
-                    // v2.8.50: Samsung Exynos HAL interprets mic mute as "mute
-                    // entire voice uplink to modem", which blocks NSRC-injected
-                    // AudioTrack audio from reaching the caller.
-                    // MSM8930: mic muting is handled at ALSA level (DEC MUX=ZERO,
-                    // MICBIAS=0) in mixerSetupCmd — no need for API-level mute.
                     am.isMicrophoneMute = false
                     enforceVolumes(am)
 
-                    // Delay mixer/volume setup until speaker route change settles.
+                    // Delay mixer/volume setup until route change settles.
                     Thread({
                         try {
                             Thread.sleep(profile.routeChangeDelayMs)
@@ -325,18 +328,8 @@ object GsmCallManager {
                         } catch (_: Exception) {}
                     }, "VolEnforce").start()
 
-                    // Samsung Exynos re-route dance REMOVED (v2.8.39):
-                    // v2.8.38 tried earpiece→speaker re-route at t=3s to force HAL
-                    // voice path recreation with incall_music ausage.  Results:
-                    //   - Audio moved from speaker to earpiece and STAYED there
-                    //   - 300ms delay was insufficient for route to settle
-                    //   - No incall_music mixer controls exist on Exynos 9820 anyway
-                    //     (confirmed: 1267 tinymix controls, zero match incall/inject)
-                    //   - No ausage config files on this firmware
-                    // The re-route served no purpose and broke speaker mode.
-
-                    val tinymixStatus = if (DeviceProfile.tinymixBin.isNotEmpty()) "available" else "NOT FOUND"
                     val route = if (profile.requireSpeakerMode) "speaker" else "earpiece"
+                    val tinymixStatus = if (DeviceProfile.tinymixBin.isNotEmpty()) "available" else "NOT FOUND"
                     appLog("Audio bridge: $route, mode=${am.mode}, tinymix=$tinymixStatus, profile=${profile.name}")
                 }
             }
