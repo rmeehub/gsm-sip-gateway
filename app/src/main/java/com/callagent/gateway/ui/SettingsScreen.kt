@@ -25,6 +25,7 @@ fun SettingsScreen(viewModel: MainViewModel, modifier: Modifier = Modifier) {
     var user by remember { mutableStateOf(prefs.getString("user", "") ?: "") }
     var pass by remember { mutableStateOf(prefs.getString("pass", "") ?: "") }
     var localServer by remember { mutableStateOf(prefs.getBoolean("local_server", false)) }
+    var usePublicIp by remember { mutableStateOf(prefs.getBoolean("use_public_ip", false)) }
     var autoconnect by remember { mutableStateOf(prefs.getBoolean("autoconnect", true)) }
     var configUrl by remember { mutableStateOf("") }
     
@@ -115,6 +116,19 @@ fun SettingsScreen(viewModel: MainViewModel, modifier: Modifier = Modifier) {
                 Text("Run internal SIP Server instead of connecting to Asterisk", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
+        Spacer(modifier = Modifier.height(16.dp))
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Switch(checked = usePublicIp, onCheckedChange = { usePublicIp = it })
+            Spacer(modifier = Modifier.width(16.dp))
+            Column {
+                Text("Public IP Mode (STUN)", fontWeight = FontWeight.SemiBold)
+                Text("Use STUN to discover public IP for NAT traversal", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
         
         Spacer(modifier = Modifier.height(32.dp))
 
@@ -126,6 +140,7 @@ fun SettingsScreen(viewModel: MainViewModel, modifier: Modifier = Modifier) {
                     .putString("user", user)
                     .putString("pass", pass)
                     .putBoolean("local_server", localServer)
+                    .putBoolean("use_public_ip", usePublicIp)
                     .putBoolean("autoconnect", autoconnect)
                     .apply()
                 
@@ -134,7 +149,8 @@ fun SettingsScreen(viewModel: MainViewModel, modifier: Modifier = Modifier) {
                     port = port.toIntOrNull() ?: 5060,
                     user = user,
                     pass = pass,
-                    localServer = localServer
+                    localServer = localServer,
+                    usePublicIp = usePublicIp
                 )
             },
             modifier = Modifier.fillMaxWidth().height(56.dp),

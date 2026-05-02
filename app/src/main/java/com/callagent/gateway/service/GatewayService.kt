@@ -16,6 +16,7 @@ import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
+import android.telephony.TelephonyManager
 import android.util.Log
 import com.callagent.gateway.BuildConfig
 import com.callagent.gateway.GatewayApp
@@ -54,6 +55,7 @@ class GatewayService : Service() {
     private var cfgUser = ""
     private var cfgPass = ""
     private var cfgLocalServer = false
+    private var cfgUsePublicIp = false
     private var currentLocalIp = ""
 
     // ── Call tracking ───────────────────────────────────
@@ -248,6 +250,7 @@ class GatewayService : Service() {
         val username = intent?.getStringExtra(EXTRA_USER) ?: prefs.getString("user", "") ?: ""
         val password = intent?.getStringExtra(EXTRA_PASS) ?: prefs.getString("pass", "") ?: ""
         val localServer = intent?.getBooleanExtra(EXTRA_LOCAL_SERVER, prefs.getBoolean("local_server", false)) ?: prefs.getBoolean("local_server", false)
+        val usePublicIp = intent?.getBooleanExtra(EXTRA_USE_PUBLIC_IP, prefs.getBoolean("use_public_ip", false)) ?: prefs.getBoolean("use_public_ip", false)
 
         if (!localServer && (server.isEmpty() || username.isEmpty())) {
             Log.e(TAG, "Missing SIP configuration")
@@ -268,6 +271,7 @@ class GatewayService : Service() {
             .putString("user", username)
             .putString("pass", password)
             .putBoolean("local_server", localServer)
+            .putBoolean("use_public_ip", usePublicIp)
             .apply()
 
         cfgServer = server
@@ -275,6 +279,7 @@ class GatewayService : Service() {
         cfgUser = username
         cfgPass = password
         cfgLocalServer = localServer
+        cfgUsePublicIp = usePublicIp
 
         notifStatusText = "Connecting"
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -313,8 +318,8 @@ class GatewayService : Service() {
         currentLocalIp = localIp
         broadcastLog("Local IP: $localIp")
 
-        val publicIp = if (cfgLocalServer) {
-            broadcastLog("Local Server mode: bypassing STUN")
+        val publicIp = if (cfgLocalServer || !cfgUsePublicIp) {
+            broadcastLog(if (cfgLocalServer) "Local Server mode: bypassing STUN" else "Public IP Mode disabled: using local IP")
             localIp
         } else {
             // STUN: discover public IP for NAT traversal
@@ -385,7 +390,6 @@ class GatewayService : Service() {
                     currentCallStart = 0L
                     currentCallNumber = ""
                 }
-
                 // Map bridge state to notification status text
                 val (notifState, statusText) = when (state) {
                     CallOrchestrator.BridgeState.IDLE ->
@@ -547,6 +551,10 @@ class GatewayService : Service() {
             putExtra("in_duration", incomingDurationSec)
             putExtra("out_calls", outgoingCalls)
             putExtra("out_duration", outgoingDurationSec)
+            putExtra("is_local", cfgLocalServer)
+            val telephonyInfo = getTelephonyInfo()
+            putExtra("sim_status", telephonyInfo.first)
+            putExtra("network_type", telephonyInfo.second)
         }
         sendBroadcast(intent)
     }
@@ -584,6 +592,34 @@ class GatewayService : Service() {
             Log.e(TAG, "Failed to get local IP: ${e.message}")
         }
         return "0.0.0.0"
+    }
+
+    private fun getTelephonyInfo(): Pair<String, String> {
+        val tm = getSystemService(Context.TELEPHONY_SERVICE) as TelephonyManager
+        val simState = when (tm.simState) {
+            TelephonyManager.SIM_STATE_READY -> "Ready"
+            TelephonyManager.SIM_STATE_ABSENT -> "No SIM"
+            TelephonyManager.SIM_STATE_NETWORK_LOCKED -> "Locked"
+            TelephonyManager.SIM_STATE_PIN_REQUIRED -> "PIN Required"
+            TelephonyManager.SIM_STATE_PUK_REQUIRED -> "PUK Required"
+            else -> "Unknown"
+        }
+        
+        val networkType = try {
+            val type = tm.networkType
+            when (type) {
+                TelephonyManager.NETWORK_TYPE_LTE -> "LTE (VoLTE)"
+                TelephonyManager.NETWORK_TYPE_HSPAP -> "3.5G (HSPA+)"
+                TelephonyManager.NETWORK_TYPE_EDGE -> "2G (EDGE)"
+                TelephonyManager.NETWORK_TYPE_GPRS -> "2G (GPRS)"
+                TelephonyManager.NETWORK_TYPE_NR -> "5G"
+                else -> "Cellular ($type)"
+            }
+        } catch (e: SecurityException) {
+            "Unknown"
+        }
+        
+        return simState to networkType
     }
 
     /**
@@ -699,11 +735,12 @@ class GatewayService : Service() {
         const val EXTRA_USER = "user"
         const val EXTRA_PASS = "pass"
         const val EXTRA_LOCAL_SERVER = "local_server"
+        const val EXTRA_USE_PUBLIC_IP = "use_public_ip"
         const val EXTRA_NUMBER = "number"
         const val STATUS_ACTION = "com.callagent.gateway.STATUS"
         const val LOG_ACTION = "com.callagent.gateway.LOG"
 
-        fun start(context: Context, server: String, port: Int, user: String, pass: String, localServer: Boolean = false) {
+        fun start(context: Context, server: String, port: Int, user: String, pass: String, localServer: Boolean = false, usePublicIp: Boolean = false) {
             val intent = Intent(context, GatewayService::class.java).apply {
                 action = ACTION_START
                 putExtra(EXTRA_SERVER, server)
@@ -711,6 +748,7 @@ class GatewayService : Service() {
                 putExtra(EXTRA_USER, user)
                 putExtra(EXTRA_PASS, pass)
                 putExtra(EXTRA_LOCAL_SERVER, localServer)
+                putExtra(EXTRA_USE_PUBLIC_IP, usePublicIp)
             }
             context.startForegroundService(intent)
         }

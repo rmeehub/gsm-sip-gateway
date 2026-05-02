@@ -1,6 +1,7 @@
 package com.callagent.gateway.ui
 
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -64,6 +65,22 @@ fun DashboardScreen(viewModel: MainViewModel, modifier: Modifier = Modifier) {
                     fontSize = 16.sp,
                     color = if (state.isRunning) Color.White.copy(alpha = 0.8f) else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f)
                 )
+
+                if (state.isRunning) {
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Surface(
+                        color = Color.White.copy(alpha = 0.2f),
+                        shape = CircleShape
+                    ) {
+                        Text(
+                            text = if (state.isLocalPbx) "SERVER MODE" else "CLIENT MODE",
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White
+                        )
+                    }
+                }
             }
         }
 
@@ -117,7 +134,50 @@ fun DashboardScreen(viewModel: MainViewModel, modifier: Modifier = Modifier) {
             }
         }
 
-        Spacer(modifier = Modifier.height(24.dp))
+        if (state.isLocalPbx) {
+            Spacer(modifier = Modifier.height(16.dp))
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text("SIP Client Details (Zoiper/Softphone)", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text("Server IP: $ip", fontSize = 14.sp)
+                    Text("Port: 5060", fontSize = 14.sp)
+                    Text("Username: 100", fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                    Text("Password: 1234", fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = "Use these details to connect your SIP client directly to this phone.",
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.7f)
+                    )
+                }
+            }
+        }
+        // SIM & Network Status Card
+        Card(
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Column {
+                    Text("SIM Status", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                    Text(state.simStatus, color = if (state.simStatus == "Ready") Color(0xFF4CAF50) else MaterialTheme.colorScheme.error)
+                }
+                Box(modifier = Modifier.height(32.dp).width(1.dp).background(MaterialTheme.colorScheme.surfaceVariant))
+                Column(horizontalAlignment = Alignment.End) {
+                    Text("Network Type", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                    Text(state.networkType, color = MaterialTheme.colorScheme.primary)
+                }
+            }
+        }
 
         Spacer(modifier = Modifier.height(24.dp))
 

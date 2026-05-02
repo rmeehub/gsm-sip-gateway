@@ -24,7 +24,10 @@ data class GatewayState(
     val outgoingCalls: Int = 0,
     val isRunning: Boolean = false,
     val webHostInfo: String = "",
-    val activeCallDirection: String? = null // "IN", "OUT", or null
+    val activeCallDirection: String? = null, // "IN", "OUT", or null
+    val isLocalPbx: Boolean = false,
+    val simStatus: String = "Unknown",
+    val networkType: String = "Unknown"
 )
 
 data class InCallState(
@@ -56,10 +59,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     val state = intent?.getStringExtra("state") ?: "IDLE"
                     val info = intent?.getStringExtra("info") ?: ""
                     val running = state != "STOPPED" && state != "ERROR"
+                    val local = intent?.getBooleanExtra("is_local", false) ?: false
+                    val sim = intent?.getStringExtra("sim_status") ?: "Unknown"
+                    val net = intent?.getStringExtra("network_type") ?: "Unknown"
                     _gatewayState.value = _gatewayState.value.copy(
                         status = state,
                         info = info,
                         isRunning = running,
+                        isLocalPbx = local,
+                        simStatus = sim,
+                        networkType = net,
                         activeCallDirection = if (state.contains("GSM_RINGING") || state.contains("GSM_ANSWERED")) "IN" 
                                              else if (state.contains("GSM_DIALING") || state.contains("SIP_CALLING")) "OUT"
                                              else null
@@ -109,7 +118,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _systemLogs.value = emptyList()
     }
 
-    fun toggleGateway(server: String, port: Int, user: String, pass: String, localServer: Boolean) {
+    fun toggleGateway(server: String, port: Int, user: String, pass: String, localServer: Boolean, usePublicIp: Boolean) {
         val ctx = getApplication<Application>()
         if (_gatewayState.value.isRunning) {
             val i = Intent(ctx, GatewayService::class.java).apply { action = GatewayService.ACTION_STOP }
@@ -122,6 +131,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 putExtra(GatewayService.EXTRA_USER, user)
                 putExtra(GatewayService.EXTRA_PASS, pass)
                 putExtra(GatewayService.EXTRA_LOCAL_SERVER, localServer)
+                putExtra(GatewayService.EXTRA_USE_PUBLIC_IP, usePublicIp)
             }
             ctx.startService(i)
         }
