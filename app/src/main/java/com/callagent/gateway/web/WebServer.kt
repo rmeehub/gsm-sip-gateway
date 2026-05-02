@@ -254,10 +254,10 @@ async function loadClients() {
   if (!clients.length) { tbody.innerHTML='<tr><td colspan="4" style="color:#64748b">No clients registered</td></tr>'; return; }
   tbody.innerHTML = clients.map(c => `
     <tr>
-      <td>${c.extension}</td>
-      <td style="font-size:0.8rem;color:#64748b">${c.contact}</td>
-      <td><span class="dot ${c.online ? 'dot-green' : 'dot-grey'}"></span>${c.online ? 'Online' : 'Offline'}</td>
-      <td>${c.expires_in}s</td>
+      <td>${'$'}{c.extension}</td>
+      <td style="font-size:0.8rem;color:#64748b">${'$'}{c.contact}</td>
+      <td><span class="dot ${'$'}{c.online ? 'dot-green' : 'dot-grey'}"></span>${'$'}{c.online ? 'Online' : 'Offline'}</td>
+      <td>${'$'}{c.expires_in}s</td>
     </tr>`).join('');
 }
 
@@ -266,9 +266,9 @@ async function loadExtensions() {
   const tbody = document.getElementById('ext-tbody');
   tbody.innerHTML = exts.map(e => `
     <tr>
-      <td><strong>${e.extension}</strong></td>
-      <td>${e.password}</td>
-      <td><button class="btn-danger" onclick="delExt('${e.extension}')">Delete</button></td>
+      <td><strong>${'$'}{e.extension}</strong></td>
+      <td>${'$'}{e.password}</td>
+      <td><button class="btn-danger" onclick="delExt('${'$'}{e.extension}')">Delete</button></td>
     </tr>`).join('') || '<tr><td colspan="3" style="color:#64748b">No extensions</td></tr>';
 }
 

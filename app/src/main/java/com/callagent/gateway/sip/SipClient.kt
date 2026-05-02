@@ -86,14 +86,17 @@ class SipClient(
         }, "SIP-Register").start()
     }
 
-    /**
-     * Listen-only mode for Local PBX: bind the socket and handle incoming SIP
+    /** Listen-only mode for Local PBX: bind the socket and handle incoming SIP
      * packets (REGISTER, INVITE from clients) without sending REGISTER ourselves.
      */
+    var isLocalServer: Boolean = false
+        private set
+
     @Synchronized
     fun startListenOnly() {
         if (running.get()) return
         running.set(true)
+        isLocalServer = true
         callIdBase = "${System.currentTimeMillis() / 1000}@$localIp"
         // In listen-only mode we don't need to resolve an external server DNS
         try {
