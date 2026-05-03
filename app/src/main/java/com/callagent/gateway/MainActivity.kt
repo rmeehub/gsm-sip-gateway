@@ -265,6 +265,22 @@ class MainActivity : AppCompatActivity() {
         // Request root permission first - critical for gateway operation
         RootShell.init()
 
+        // Check for tinymix at startup and notify if not found
+        Thread {
+            val path = com.callagent.gateway.DeviceProfile.tinymixBin
+            if (path.isEmpty()) {
+                runOnUiThread {
+                    android.widget.Toast.makeText(
+                        this,
+                        "Warning: tinymix binary not found! Audio routing may not work.",
+                        android.widget.Toast.LENGTH_LONG
+                    ).show()
+                }
+            } else {
+                appendLog("tinymix found at: $path")
+            }
+        }.start()
+
         // Tab containers
         tabbedRoot = findViewById(R.id.tabbedRoot)
         tabDialer = findViewById(R.id.tabDialer)
