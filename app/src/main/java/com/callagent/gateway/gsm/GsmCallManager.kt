@@ -148,8 +148,6 @@ object GsmCallManager {
             Call.STATE_CONNECTING -> "CONNECTING"
             Call.STATE_RINGING -> "RINGING"
             Call.STATE_DIALING -> "DIALING"
-            Call.STATE_CONNECTED -> "CONNECTED"
-            Call.STATE_HOLD -> "HOLD"
             Call.STATE_DISCONNECTED -> "DISCONNECTED"
             Call.STATE_DISCONNECTING -> "DISCONNECTING"
             else -> "STATE_$state"
