@@ -155,7 +155,6 @@ class GatewayService : Service() {
         // Tear down existing client
         orchestrator?.stop()
         sipClient?.stop()
-        WebServer.stop()
         orchestrator = null
         sipClient = null
 
@@ -260,11 +259,8 @@ class GatewayService : Service() {
             return
         }
 
-        if (localServer) {
-            WebServer.start(this, 8080)
-        } else {
-            WebServer.stop()
-        }
+        // Web server runs in all modes for status/log monitoring
+        WebServer.start(this, 8080)
 
         // Save for restart
         prefs.edit()
