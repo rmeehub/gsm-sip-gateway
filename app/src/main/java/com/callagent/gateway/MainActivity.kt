@@ -262,6 +262,14 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
+        // Request root permission in a background thread to prevent blocking main thread
+        // and causing an ANR, allowing the Magisk su popup to appear.
+        Thread {
+            RootShell.init()
+            // Force evaluate tinymixBin so discovery happens in background
+            com.callagent.gateway.DeviceProfile.tinymixBin
+        }.start()
+
         // Tab containers
         tabbedRoot = findViewById(R.id.tabbedRoot)
         tabDialer = findViewById(R.id.tabDialer)
@@ -449,12 +457,14 @@ class MainActivity : AppCompatActivity() {
         val etUser = view.findViewById<EditText>(R.id.etSipUser)
         val etPassword = view.findViewById<EditText>(R.id.etSipPassword)
         val cbAutoconnect = view.findViewById<CheckBox>(R.id.cbAutoconnect)
+        val cbStunEnabled = view.findViewById<CheckBox>(R.id.cbStunEnabled)
 
         etServer.setText(prefs.getString("server", "sip.callagent.pro"))
         etPort.setText(prefs.getInt("port", 5060).toString())
         etUser.setText(prefs.getString("user", ""))
         etPassword.setText(prefs.getString("pass", ""))
         cbAutoconnect.isChecked = prefs.getBoolean("autoconnect", true)
+        cbStunEnabled.isChecked = prefs.getBoolean("stun_enabled", true)
 
         AlertDialog.Builder(this)
             .setTitle("SIP Configuration")
@@ -470,8 +480,9 @@ class MainActivity : AppCompatActivity() {
                     .putString("user", user)
                     .putString("pass", pass)
                     .putBoolean("autoconnect", cbAutoconnect.isChecked)
+                    .putBoolean("stun_enabled", cbStunEnabled.isChecked)
                     .apply()
-                appendLog("Config saved: $user@$server:$port (autoconnect=${cbAutoconnect.isChecked})")
+                appendLog("Config saved: $user@$server:$port (autoconnect=${cbAutoconnect.isChecked}, stun=${cbStunEnabled.isChecked})")
             }
             .setNegativeButton("Cancel", null)
             .show()

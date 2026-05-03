@@ -166,7 +166,10 @@ class GatewayService : Service() {
         super.onCreate()
         createNotificationChannel()
         registerNetworkCallback()
-        RootShell.init()
+        Thread {
+            RootShell.init()
+            com.callagent.gateway.DeviceProfile.tinymixBin
+        }.start()
         Log.i(TAG, "GatewayService created")
     }
 
@@ -296,16 +299,28 @@ class GatewayService : Service() {
         currentLocalIp = localIp
         broadcastLog("Local IP: $localIp")
 
+        // Read preferences for STUN
+        val prefs = getSharedPreferences("gateway", Context.MODE_PRIVATE)
+        val stunEnabled = prefs.getBoolean("stun_enabled", true)
+
         // STUN: discover public IP for NAT traversal
-        val stunResult = try { StunClient.discover() } catch (e: Exception) {
-            Log.e(TAG, "STUN exception: ${e.javaClass.simpleName}: ${e.message}")
+        val stunResult = if (stunEnabled) {
+            try { StunClient.discover() } catch (e: Exception) {
+                Log.e(TAG, "STUN exception: ${e.javaClass.simpleName}: ${e.message}")
+                null
+            }
+        } else {
+            Log.i(TAG, "STUN disabled by user config")
             null
         }
+
         val publicIp = stunResult?.publicIp ?: localIp
         if (stunResult != null) {
             broadcastLog("STUN public IP: ${stunResult.publicIp}:${stunResult.publicPort}")
-        } else {
+        } else if (stunEnabled) {
             broadcastLog("STUN failed, using local IP for SDP")
+        } else {
+            broadcastLog("STUN disabled, using local IP: $localIp")
         }
 
         if (stopped) return

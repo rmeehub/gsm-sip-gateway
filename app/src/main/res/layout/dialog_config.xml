@@ -102,4 +102,14 @@
         android:layout_marginTop="16dp"
         android:checked="true" />
 
+    <!-- STUN -->
+    <CheckBox
+        android:id="@+id/cbStunEnabled"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Enable STUN (NAT Traversal)"
+        android:textColor="@color/text_label"
+        android:layout_marginTop="8dp"
+        android:checked="true" />
+
 </LinearLayout>

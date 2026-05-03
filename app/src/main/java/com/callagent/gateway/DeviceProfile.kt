@@ -113,14 +113,21 @@ data class DeviceProfile(
                 "/vendor/bin/tinymix",
                 "/system/bin/tinymix",
                 "/system/xbin/tinymix",
+                "/sbin/tinymix",
+                "/su/bin/tinymix",
+                "/vendor/bin/alsa_amixer",
+                "/system/bin/alsa_amixer",
+                "/system/xbin/alsa_amixer"
             )
             try {
-                // Batch-check all paths in a single su call for speed
+                // Batch-check all paths in a single su call for speed.
+                // We use -f instead of -x because some ROMs don't report the bit standardly,
+                // and root can usually execute anything with -f.
                 val checks = paths.joinToString("; ") { p ->
-                    "[ -x '$p' ] && echo 'FOUND:$p'"
+                    "[ -f '$p' ] && echo 'FOUND:$p'"
                 }
                 val result = RootShell.execForOutput(
-                    "$checks; which tinymix 2>/dev/null | head -1",
+                    "$checks; which tinymix 2>/dev/null | head -n 1; which alsa_amixer 2>/dev/null | head -n 1",
                     timeoutMs = 3000
                 )
                 // Check explicit path matches first
