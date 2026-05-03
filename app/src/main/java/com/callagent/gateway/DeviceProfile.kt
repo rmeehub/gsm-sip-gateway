@@ -113,6 +113,8 @@ data class DeviceProfile(
                 "/vendor/bin/tinymix",
                 "/system/bin/tinymix",
                 "/system/xbin/tinymix",
+                "/sbin/tinymix",
+                "/su/bin/tinymix",
                 "/vendor/bin/alsa_amixer",
                 "/system/bin/alsa_amixer",
                 "/system/xbin/alsa_amixer"
@@ -120,10 +122,10 @@ data class DeviceProfile(
             try {
                 // Batch-check all paths in a single su call for speed
                 val checks = paths.joinToString("; ") { p ->
-                    "[ -x '$p' ] && echo 'FOUND:$p'"
+                    "[ -f '$p' ] && echo 'FOUND:$p'"
                 }
                 val result = RootShell.execForOutput(
-                    "$checks; which tinymix 2>/dev/null | head -1; which alsa_amixer 2>/dev/null | head -1",
+                    "$checks; which tinymix 2>/dev/null | head -n 1; which alsa_amixer 2>/dev/null | head -n 1",
                     timeoutMs = 3000
                 )
                 // Check explicit path matches first

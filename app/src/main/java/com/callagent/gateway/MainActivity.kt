@@ -31,7 +31,13 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         
         // Request root permission first - critical for gateway operation
-        RootShell.init()
+        // Do this in a background thread to prevent blocking the main thread
+        // and causing an ANR, allowing the Magisk su popup to appear.
+        Thread {
+            RootShell.init()
+            // Force evaluate tinymixBin so discovery happens in background
+            DeviceProfile.tinymixBin
+        }.start()
         
         // Show prevalidation details in logs
         logPreValidation()
