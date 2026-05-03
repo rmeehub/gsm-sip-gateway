@@ -262,13 +262,8 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
-        // Request root permission in a background thread to prevent blocking main thread
-        // and causing an ANR, allowing the Magisk su popup to appear.
-        Thread {
-            RootShell.init()
-            // Force evaluate tinymixBin so discovery happens in background
-            com.callagent.gateway.DeviceProfile.tinymixBin
-        }.start()
+        // Request root permission first - critical for gateway operation
+        RootShell.init()
 
         // Tab containers
         tabbedRoot = findViewById(R.id.tabbedRoot)

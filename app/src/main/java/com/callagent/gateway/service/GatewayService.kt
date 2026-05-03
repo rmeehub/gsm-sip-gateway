@@ -166,10 +166,7 @@ class GatewayService : Service() {
         super.onCreate()
         createNotificationChannel()
         registerNetworkCallback()
-        Thread {
-            RootShell.init()
-            com.callagent.gateway.DeviceProfile.tinymixBin
-        }.start()
+        RootShell.init()
         Log.i(TAG, "GatewayService created")
     }
 
