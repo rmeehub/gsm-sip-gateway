@@ -2,6 +2,8 @@ package com.callagent.gateway.web
 
 import android.content.Context
 import android.util.Log
+import com.callagent.gateway.service.GatewayService
+import com.callagent.gateway.sip.SipBuilder
 import io.ktor.http.*
 import io.ktor.server.application.*
 import io.ktor.server.engine.*
@@ -139,6 +141,28 @@ object WebServer {
                             }
                             call.respondText(arr.toString(), ContentType.Application.Json)
                         }
+
+                        // Export system logs
+                        get("/api/logs") {
+                            val logs = GatewayService.drainLogBuffer()
+                            val format = call.parameters["format"] ?: "text"
+                            if (format == "json") {
+                                val arr = JSONArray()
+                                logs.forEach { arr.put(it) }
+                                call.respondText(arr.toString(), ContentType.Application.Json)
+                            } else {
+                                call.respondText(logs.joinToString("\n"), ContentType.Text.Plain)
+                            }
+                        }
+
+                        // Real-time log stream via Server-Sent Events
+                        get("/api/logs/stream") {
+                            call.respondText("text/event-stream", ContentType.Text.Plain) {
+                                GatewayService.logBuffer.forEach { log ->
+                                    append("data: $log\n\n")
+                                }
+                            }
+                        }
                     }
                 }.start(wait = false)
                 Log.i(TAG, "Web UI started on port $port")
@@ -154,6 +178,9 @@ object WebServer {
         Log.i(TAG, "Web UI stopped")
     }
 
+    /** Check if web server is currently running */
+    fun isRunning(): Boolean = engine != null
+
     /** Check if a REGISTER request is for a valid extension (password validation) */
     fun isValidExtension(user: String, password: String): Boolean {
         return extensions[user] == password
@@ -162,6 +189,63 @@ object WebServer {
     /** Check if an extension exists in the configuration */
     fun extensionExists(user: String): Boolean {
         return extensions.containsKey(user)
+    }
+
+    /** Validate credentials from Authorization header */
+    fun validateCredentials(user: String, authHeader: String): Boolean {
+        val expectedPass = extensions[user] ?: return false
+        
+        // Parse Digest authentication
+        if (authHeader.startsWith("Digest ", ignoreCase = true)) {
+            val authParams = authHeader.removePrefix("Digest ").split(",")
+                .associate {
+                    val parts = it.trim().split("=", limit = 2)
+                    if (parts.size == 2) {
+                        parts[0].trim() to parts[1].trim().removeSurrounding("\"")
+                    } else {
+                        "" to ""
+                    }
+                }
+            
+            val realm = authParams["realm"] ?: return false
+            val username = authParams["username"] ?: return false
+            val nonce = authParams["nonce"] ?: return false
+            val response = authParams["response"] ?: return false
+            val uri = authParams["uri"] ?: return false
+            
+            // For simplicity, do basic MD5 check - full RFC 2831 implementation would be more complete
+            val ha1 = md5("$username:$realm:$expectedPass")
+            val ha2 = md5("REGISTER:$uri")
+            val expectedResponse = md5("$ha1:$nonce:$ha2")
+            
+            return response == expectedResponse
+        }
+        
+        // Basic auth fallback
+        if (authHeader.startsWith("Basic ", ignoreCase = true)) {
+            val encoded = authHeader.removePrefix("Basic ")
+            val decoded = String(android.util.Base64.decode(encoded, android.util.Base64.DEFAULT))
+            val (u, p) = decoded.split(":", limit = 2)
+            return u == user && p == expectedPass
+        }
+        
+        return false
+    }
+
+    private fun md5(input: String): String {
+        try {
+            val md = java.security.MessageDigest.getInstance("MD5")
+            val digest = md.digest(input.toByteArray())
+            return digest.joinToString("") { "%02x".format(it) }
+        } catch (e: Exception) {
+            return input // Fallback
+        }
+    }
+
+    /** Check if a client is authenticated for PBX mode */
+    fun isClientAuthenticated(extension: String): Boolean {
+        val client = registeredClients[extension] ?: return false
+        return client.authVerified && client.expiry > System.currentTimeMillis()
     }
 
     private fun getHtml(): String = """

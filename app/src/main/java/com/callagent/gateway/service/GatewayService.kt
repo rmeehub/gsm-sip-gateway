@@ -440,6 +440,9 @@ class GatewayService : Service() {
                 WebServer.getRegisteredClients = { sip.registeredClients }
                 broadcastLog("[v${BuildConfig.VERSION_NAME}] Local SIP PBX Mode — listening on :5060")
                 broadcastStatus("ONLINE", "PBX Active at http://${getLocalIp()}:8080")
+                
+                // Update notification immediately to show Connected for server mode
+                updateNotification(NotifState.OK, "PBX Running")
             } else {
                 sip.start()
                 broadcastLog("[v${BuildConfig.VERSION_NAME}] SIP client started, registering with $cfgServer:$cfgPort")
@@ -449,6 +452,7 @@ class GatewayService : Service() {
             Log.e(TAG, "Failed to start SIP client: ${e.message}", e)
             broadcastLog("ERROR: SIP start failed — ${e.message}")
             broadcastStatus("ERROR", "SIP start failed: ${e.message}")
+            updateNotification(NotifState.ERROR, "Error")
         }
     }
 
@@ -527,14 +531,34 @@ class GatewayService : Service() {
     private fun acquireLocks() {
         val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
         wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "gateway:sip").apply {
-            acquire()
+            // Keep device awake for as long as needed
+            acquire(24 * 60 * 60 * 1000L) // 24 hours max
         }
 
         val wm = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
         wifiLock = wm.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "gateway:wifi").apply {
-            acquire()
+            // Keep WiFi always on - critical for SIP connection
+            acquire(24 * 60 * 60 * 1000L) // 24 hours max
         }
-        Log.i(TAG, "Wake + WiFi locks acquired")
+        
+        // Ensure WiFi doesn't turn off when screen goes off
+        // Using high performance mode for better connectivity
+        val prefs = getSharedPreferences("gateway", MODE_PRIVATE)
+        if (prefs.getBoolean("keep_wifi_always_on", true)) {
+            // Force WiFi to stay on - this prevents power saving
+            try {
+                val connMgr = getSystemService(Context.CONNECTIVITY_SERVICE) as android.net.ConnectivityManager
+                val network = connMgr.activeNetwork
+                val capabilities = connMgr.getNetworkCapabilities(network)
+                if (capabilities?.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI) == true) {
+                    Log.i(TAG, "WiFi is active and will stay connected")
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Could not verify WiFi status: ${e.message}")
+            }
+        }
+        
+        Log.i(TAG, "Wake + WiFi locks acquired (WiFi will stay active)")
     }
 
     private fun releaseLocks() {

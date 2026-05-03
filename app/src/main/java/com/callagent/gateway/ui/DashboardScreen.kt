@@ -22,6 +22,9 @@ import java.net.NetworkInterface
 @Composable
 fun DashboardScreen(viewModel: MainViewModel, modifier: Modifier = Modifier) {
     val state by viewModel.gatewayState.collectAsState()
+    val context = LocalContext.current
+    val prefs = remember { context.getSharedPreferences("gateway", android.content.Context.MODE_PRIVATE) }
+    val webEnabled = prefs.getBoolean("enable_web_server", true)
 
     Column(
         modifier = modifier
@@ -113,25 +116,43 @@ fun DashboardScreen(viewModel: MainViewModel, modifier: Modifier = Modifier) {
             Spacer(modifier = Modifier.height(24.dp))
         }
 
-        // Web Hosting Info
-        val ip = remember { getLocalIpAddress() }
-        Card(
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Column(modifier = Modifier.padding(16.dp)) {
-                Text("Web Management Interface", fontWeight = FontWeight.Bold, fontSize = 16.sp)
-                Spacer(modifier = Modifier.height(8.dp))
-                Text(
-                    text = if (ip != null) "http://$ip:8080" else "Waiting for network...",
-                    fontSize = 18.sp,
-                    color = MaterialTheme.colorScheme.primary,
-                    fontWeight = FontWeight.SemiBold
-                )
-                Text(
-                    text = "Access this URL from your PC to manage PBX",
-                    fontSize = 12.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+        // Web Hosting Info - Always show if enabled
+        
+        if (webEnabled || state.isLocalPbx) {
+            Card(
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.Language, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Web Management Interface", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                        Spacer(modifier = Modifier.weight(1f))
+                        Surface(
+                            color = if (webEnabled) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
+                            shape = MaterialTheme.shapes.small
+                        ) {
+                            Text(
+                                text = if (webEnabled) "ENABLED" else "DISABLED",
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = if (ip != null) "http://$ip:8080" else "Waiting for network...",
+                        fontSize = 18.sp,
+                        color = MaterialTheme.colorScheme.primary,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Text(
+                        text = if (state.isLocalPbx) "Access to manage PBX and view logs" else "Access to monitor logs and configuration",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             }
         }
 

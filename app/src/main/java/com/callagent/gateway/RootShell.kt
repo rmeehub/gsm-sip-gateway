@@ -35,6 +35,9 @@ object RootShell {
     @Volatile private var workerThread: Thread? = null
     @Volatile private var alive = false
 
+    /** Check if root shell is alive and ready */
+    val isAlive: Boolean get() = alive && process != null
+
     /** Ensure the persistent shell is running. Safe to call multiple times. */
     @Synchronized
     fun init() {

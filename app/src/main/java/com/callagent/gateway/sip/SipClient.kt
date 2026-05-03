@@ -261,6 +261,16 @@ class SipClient(
 
         // New INVITE
         if (msg.isRequest && msg.method == "INVITE") {
+            // In PBX mode, verify the caller is authenticated
+            if (isLocalServer) {
+                val fromUser = msg.from?.let { extractUser(it) } ?: ""
+                val client = registeredClients[fromUser]
+                if (client == null || !client.authVerified || client.expiry < System.currentTimeMillis()) {
+                    uiLog("PBX: Rejected INVITE from unauthenticated $fromUser")
+                    sendTo(SipBuilder.response(msg, 403, "Forbidden"), address)
+                    return
+                }
+            }
             handleIncomingInvite(msg, address)
             return
         }
@@ -293,7 +303,7 @@ class SipClient(
 
     // ── PBX Registrar ───────────────────────────────────
 
-    data class PbxClient(val contact: String, val expiry: Long, val address: Pair<String, Int>)
+    data class PbxClient(val contact: String, val expiry: Long, val address: Pair<String, Int>, val authVerified: Boolean = false)
 
     /** Map of extension → PbxClient for PBX mode */
     val registeredClients = ConcurrentHashMap<String, PbxClient>()
@@ -308,6 +318,23 @@ class SipClient(
             return
         }
 
+        // Validate authentication for registration
+        val authHeader = msg.headers["authorization"]
+        val isAuthenticated = if (authHeader != null) {
+            com.callagent.gateway.web.WebServer.validateCredentials(fromUser, authHeader)
+        } else {
+            // No auth header - require one or reject
+            uiLog("PBX: $fromUser registering without auth, challenging")
+            sendTo(com.callagent.gateway.sip.SipBuilder.response(msg, 401, "Unauthorized"), address)
+            return
+        }
+
+        if (!isAuthenticated) {
+            uiLog("PBX: $fromUser auth failed")
+            sendTo(com.callagent.gateway.sip.SipBuilder.response(msg, 403, "Forbidden"), address)
+            return
+        }
+
         val expires = msg.headers["expires"]?.trim()?.toLongOrNull() ?: 3600L
         val contact = msg.headers["contact"] ?: "<sip:${address.first}:${address.second}>"
 
@@ -316,8 +343,8 @@ class SipClient(
             uiLog("PBX: $fromUser unregistered")
         } else {
             val expiry = System.currentTimeMillis() + expires * 1000L
-            registeredClients[fromUser] = PbxClient(contact, expiry, address)
-            uiLog("PBX: $fromUser registered from $address (${expires}s)")
+            registeredClients[fromUser] = PbxClient(contact, expiry, address, authVerified = true)
+            uiLog("PBX: $fromUser registered from $address (${expires}s) - AUTHENTICATED")
         }
 
         // Respond 200 OK to the REGISTER
@@ -424,7 +451,26 @@ class SipClient(
 
     private fun handleIncomingInvite(msg: SipMessage, address: Pair<String, Int>) {
         val callId = msg.callId ?: return
-        Log.i(TAG, "Incoming INVITE call-id=$callId from=${msg.callerNumber}")
+        val modeName = if (isLocalServer) "SERVER (PBX)" else "CLIENT"
+        
+        Log.i(TAG, "=== INCOMING SIP CALL ($modeName) ===")
+        Log.i(TAG, "Call-ID: $callId")
+        Log.i(TAG, "From: ${msg.callerNumber} (${msg.callerDisplayName ?: "unknown"})")
+        Log.i(TAG, "Source IP: ${address.first}:${address.second}")
+        
+        // Log audio routing info
+        msg.sdpRtpPort?.let { port ->
+            msg.sdpAddress?.let { addr ->
+                Log.i(TAG, "SIP Client RTP: $addr:$port")
+            }
+        }
+        
+        if (isLocalServer) {
+            Log.i(TAG, "Audio Path: SIP Client (Zoiper) <-> RTP <-> GSM Caller")
+        } else {
+            Log.i(TAG, "Audio Path: Asterisk <-> RTP <-> GSM Caller")
+        }
+        Log.i(TAG, "==========================================")
 
         // Send 100 Trying
         sendTo(SipBuilder.trying100(msg), address)

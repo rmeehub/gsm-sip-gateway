@@ -49,7 +49,7 @@ fun InCallScreen(viewModel: MainViewModel) {
                 Spacer(modifier = Modifier.height(64.dp))
                 
                 Text(
-                    text = state.number,
+                    text = state.number.ifEmpty { "Unknown" },
                     fontSize = 36.sp,
                     fontWeight = FontWeight.Light,
                     color = MaterialTheme.colorScheme.onBackground
@@ -60,7 +60,8 @@ fun InCallScreen(viewModel: MainViewModel) {
                 val statusText = when (state.callState) {
                     Call.STATE_RINGING -> "Ringing..."
                     Call.STATE_DIALING -> "Calling..."
-                    Call.STATE_ACTIVE -> "00:00" // Time can be added later
+                    Call.STATE_ACTIVE -> "In Call"
+                    Call.STATE_DISCONNECTED -> "Disconnected"
                     else -> "Connecting..."
                 }
                 
@@ -109,7 +110,10 @@ fun InCallScreen(viewModel: MainViewModel) {
                                 horizontalArrangement = Arrangement.SpaceEvenly
                             ) {
                                 row.forEach { key ->
-                                    InCallDialpadButton(key) { GsmCallManager.playDtmfTone(key[0]) }
+                                    InCallDialpadButton(key) { 
+                                        // Play DTMF tone without logging each keypress
+                                        GsmCallManager.playDtmfTone(key[0])
+                                    }
                                 }
                             }
                             Spacer(modifier = Modifier.height(12.dp))
@@ -153,29 +157,32 @@ fun InCallScreen(viewModel: MainViewModel) {
 
                 Spacer(modifier = Modifier.height(32.dp))
 
-                // End call row — always visible regardless of dialpad state
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceEvenly,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    if (state.callState == Call.STATE_RINGING) {
+                // End call row - conditionally visible based on call state
+                // Only show when call is active or ringing, not when minimized
+                if (state.callState == Call.STATE_ACTIVE || state.callState == Call.STATE_RINGING) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceEvenly,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        if (state.callState == Call.STATE_RINGING) {
+                            FloatingActionButton(
+                                onClick = { viewModel.answer() },
+                                containerColor = MaterialTheme.colorScheme.tertiary,
+                                modifier = Modifier.size(72.dp),
+                                shape = CircleShape
+                            ) {
+                                Icon(Icons.Default.Call, contentDescription = "Answer", tint = Color.White, modifier = Modifier.size(32.dp))
+                            }
+                        }
                         FloatingActionButton(
-                            onClick = { viewModel.answer() },
-                            containerColor = MaterialTheme.colorScheme.tertiary,
+                            onClick = { viewModel.hangup() },
+                            containerColor = MaterialTheme.colorScheme.error,
                             modifier = Modifier.size(72.dp),
                             shape = CircleShape
                         ) {
-                            Icon(Icons.Default.Call, contentDescription = "Answer", tint = Color.White, modifier = Modifier.size(32.dp))
+                            Icon(Icons.Default.CallEnd, contentDescription = "End Call", tint = Color.White, modifier = Modifier.size(32.dp))
                         }
-                    }
-                    FloatingActionButton(
-                        onClick = { viewModel.hangup() },
-                        containerColor = MaterialTheme.colorScheme.error,
-                        modifier = Modifier.size(72.dp),
-                        shape = CircleShape
-                    ) {
-                        Icon(Icons.Default.CallEnd, contentDescription = "End Call", tint = Color.White, modifier = Modifier.size(32.dp))
                     }
                 }
 

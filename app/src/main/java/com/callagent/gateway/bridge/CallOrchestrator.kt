@@ -10,6 +10,7 @@ import com.callagent.gateway.rtp.RtpPacket
 import com.callagent.gateway.rtp.RtpSession
 import com.callagent.gateway.sip.SipCall
 import com.callagent.gateway.sip.SipClient
+import com.callagent.gateway.web.WebServer
 import java.net.DatagramSocket
 import java.net.InetSocketAddress
 
@@ -167,7 +168,17 @@ class CallOrchestrator(
     /** Handles termination from both SipClient.Listener and SipCall.Listener */
     override fun onCallTerminated(call: SipCall) {
         Log.i(TAG, "SIP call terminated: ${call.callId} (bridge=$bridgeState, retries=$sipCallRetries, code=${call.terminationCode})")
-        if (call != activeSipCall) return
+        
+        // Check if this is the active call or if we're in a bridged state
+        // CRITICAL: When Zoiper (or any SIP client) disconnects by sending BYE,
+        // we must also disconnect the GSM call. The call parameter might be different
+        // if this is called from a different context.
+        val isActiveCall = call == activeSipCall || bridgeState != BridgeState.IDLE
+        
+        if (!isActiveCall) {
+            Log.w(TAG, "Ignoring termination for non-active call: ${call.callId}")
+            return
+        }
 
         // User-rejection codes: 486 Busy Here, 603 Decline, 480 Temporarily Unavailable, 404 Not Found
         // Do NOT retry these — the user actively rejected the call.
@@ -182,6 +193,15 @@ class CallOrchestrator(
             }
             Log.i(TAG, "User decline (${call.terminationCode}) — tearing down, no retry")
             tearDown(reason)
+            return
+        }
+
+        // If we're in BRIDGED or GSM_ACTIVE state and SIP ends, disconnect GSM
+        if (bridgeState == BridgeState.BRIDGED || bridgeState == BridgeState.GSM_ANSWERED || 
+            bridgeState == CallOrchestrator.BridgeState.GSM_RINGING || 
+            bridgeState == CallOrchestrator.BridgeState.SIP_RINGING) {
+            Log.i(TAG, "SIP terminated while call active - disconnecting GSM side")
+            tearDown("SIP client disconnected")
             return
         }
 
@@ -475,6 +495,18 @@ class CallOrchestrator(
 
     private fun startRtp(localPort: Int, remoteAddr: String, remotePort: Int,
                          payloadType: Int = RtpPacket.PT_PCMA) {
+        val isServerMode = com.callagent.gateway.web.WebServer.isRunning()
+        val modeName = if (isServerMode) "SERVER (PBX)" else "CLIENT"
+        
+        Log.i(TAG, "=== RTP Audio Flow ($modeName) ===")
+        Log.i(TAG, "Local RTP port: $localPort")
+        Log.i(TAG, "Remote RTP: $remoteAddr:$remotePort")
+        Log.i(TAG, "Codec payload type: $payloadType (${getCodecName(payloadType)})")
+        Log.i(TAG, "Audio Path:")
+        Log.i(TAG, "  OUT (Mic -> SIP): AudioRecord (VOICE_CALL) -> encode -> RTP -> $remoteAddr:$remotePort")
+        Log.i(TAG, "  IN  (SIP -> Speaker): $remoteAddr:$remotePort -> decode -> AudioTrack (EARPIECE)")
+        Log.i(TAG, "=================================")
+        
         // Re-assert RECORD_AUDIO appops SYNCHRONOUSLY before AudioRecord
         // creation.  Must complete before RtpSession.start() so AudioFlinger
         // sees "allow" when the record thread begins reading.  Running async
@@ -487,10 +519,11 @@ class CallOrchestrator(
         val session = RtpSession(context, localPort, remoteAddr, remotePort, payloadType)
         session.listener = object : RtpSession.Listener {
             override fun onRtpStarted() {
-                Log.i(TAG, "RTP session started")
+                Log.i(TAG, ">>> RTP session STARTED - Audio bridge ACTIVE <<<")
+                listener?.onRtpStats("RTP: ACTIVE - mic->SIP, SIP->speaker")
             }
             override fun onRtpStopped() {
-                Log.i(TAG, "RTP session stopped")
+                Log.i(TAG, ">>> RTP session STOPPED <<<")
             }
             override fun onRtpError(error: String) {
                 Log.e(TAG, "RTP error: $error")
@@ -506,6 +539,16 @@ class CallOrchestrator(
         }
         session.start()
         activeRtpSession = session
+    }
+
+    private fun getCodecName(payloadType: Int): String {
+        return when (payloadType) {
+            RtpPacket.PT_PCMA -> "PCMA (G.711 A-law)"
+            RtpPacket.PT_PCMU -> "PCMU (G.711 mu-law)"
+            RtpPacket.PT_G722 -> "G.722"
+            RtpPacket.PT_OPUS -> "Opus"
+            else -> "Unknown (PT=$payloadType)"
+        }
     }
 
     // ── Teardown ────────────────────────────────────────

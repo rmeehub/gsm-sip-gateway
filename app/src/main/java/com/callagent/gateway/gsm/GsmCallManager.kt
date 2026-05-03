@@ -10,6 +10,7 @@ import android.telecom.InCallService
 import android.util.Log
 import com.callagent.gateway.DeviceProfile
 import com.callagent.gateway.RootShell
+import com.callagent.gateway.web.WebServer
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -76,6 +77,22 @@ object GsmCallManager {
         activeCallState = call.state
 
         val number = call.details?.handle?.schemeSpecificPart ?: "unknown"
+        
+        // Log audio state when call is added
+        val supportedRoutes = service.callAudioState?.supportedRouteMask ?: 0
+        val currentRoute = service.callAudioState?.currentRoute ?: 0
+        val isMuted = service.callAudioState?.isMuted ?: false
+        val modeName = if (listener != null) {
+            if (com.callagent.gateway.web.WebServer.isRunning()) "SERVER (PBX)" else "CLIENT"
+        } else "STANDALONE"
+        
+        val routeNames = mutableListOf<String>()
+        if (supportedRoutes and CallAudioState.ROUTE_EARPIECE != 0) routeNames.add("EAR")
+        if (supportedRoutes and CallAudioState.ROUTE_SPEAKER != 0) routeNames.add("SPK")
+        if (supportedRoutes and CallAudioState.ROUTE_WIRED_HEADSET != 0) routeNames.add("HS")
+        if (supportedRoutes and CallAudioState.ROUTE_BLUETOOTH != 0) routeNames.add("BT")
+        
+        appLog("[$modeName] Call added: $number, state=${call.state}, routes=[${routeNames.joinToString(", ")}], current=${currentRoute}, muted=$isMuted")
 
         when (call.state) {
             Call.STATE_RINGING -> {
@@ -128,6 +145,24 @@ object GsmCallManager {
     fun onCallStateChanged(call: Call, state: Int) {
         activeCallState = state
 
+        // Log audio state on any state change
+        inCallService?.let { service ->
+            val currentRoute = service.callAudioState?.currentRoute ?: 0
+            val isMuted = service.callAudioState?.isMuted ?: false
+            val modeName = if (listener != null) {
+                if (com.callagent.gateway.web.WebServer.isRunning()) "SERVER (PBX)" else "CLIENT"
+            } else "STANDALONE"
+            
+            val routeName = when (currentRoute) {
+                CallAudioState.ROUTE_EARPIECE -> "EARPIECE"
+                CallAudioState.ROUTE_SPEAKER -> "SPEAKER"
+                CallAudioState.ROUTE_WIRED_HEADSET -> "HEADSET"
+                CallAudioState.ROUTE_BLUETOOTH -> "BLUETOOTH"
+                else -> "UNKNOWN"
+            }
+            appLog("[$modeName] State changed: ${stateToString(state)}, route=$routeName, muted=$isMuted")
+        }
+
         when (state) {
             Call.STATE_RINGING -> {
                 callDirection = "IN"
@@ -156,6 +191,12 @@ object GsmCallManager {
             }
             Call.STATE_DISCONNECTED -> {
                 Log.i(TAG, "GSM call disconnected, state=$state")
+                
+                // Log audio state on disconnect
+                val modeName = if (listener != null) {
+                    if (com.callagent.gateway.web.WebServer.isRunning()) "SERVER (PBX)" else "CLIENT"
+                } else "STANDALONE"
+                appLog("[$modeName] Call ended - audio routing restored")
                 
                 // Save Call Log
                 val timestamp = if (callStartTime > 0L) callStartTime else System.currentTimeMillis()
@@ -288,39 +329,102 @@ object GsmCallManager {
 
     /** Configure audio for GSM↔SIP bridge using the active device profile. */
     private fun configureAudioBridge() {
-        if (listener == null) return // Standalone mode: let Android handle audio routing natively
-
-        try {
-            // Run ABOX/ALSA discovery on first call for diagnostics
-            runMixerDiscovery()
-
-            inCallService?.let { service ->
-                val audioManager = service.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
-
-                // GATEWAY MODE: Route to EARPIECE so the internal mic+speaker
-                // handle the GSM audio path directly. This is the correct path
-                // for bridging — GSM voice flows through the earpiece hardware
-                // (modem → ear speaker) and we capture it via VOICE_CALL source.
-                // Using SPEAKER here causes: loud bleed into mic → echo for caller,
-                // and AudioRecord may capture speaker output instead of modem audio.
-                // Only override to speaker if the device profile specifically requires it
-                // for hardware-level audio injection (some MSM/Exynos quirks).
-                if (profile.requireSpeakerMode) {
-                    // Legacy path: device profile mandates speaker for correct HAL routing
-                    service.setAudioRoute(CallAudioState.ROUTE_SPEAKER)
-                    appLog("Audio bridge: SPEAKER (required by device profile)")
-                } else {
-                    // Default path: earpiece — cleanest audio with no echo
-                    service.setAudioRoute(CallAudioState.ROUTE_EARPIECE)
-                    appLog("Audio bridge: EARPIECE (internal mic + speaker)")
-                }
-
+        // Always log audio routing info - for both gateway and standalone modes
+        val isGatewayMode = listener != null
+        val isServerMode = WebServer.isRunning()
+        val modeName = when {
+            isGatewayMode && isServerMode -> "SERVER (PBX) MODE"
+            isGatewayMode -> "CLIENT MODE"
+            else -> "STANDALONE MODE"
+        }
+        
+        // Run ABOX/ALSA discovery on first call for diagnostics
+        runMixerDiscovery()
+        
+        inCallService?.let { service ->
+            val audioManager = service.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+            
+            // Log current supported routes for diagnostics
+            val supportedRoutes = service.callAudioState?.supportedRouteMask ?: 0
+            val currentRoute = service.callAudioState?.currentRoute ?: 0
+            
+            val routeNames = mutableListOf<String>()
+            if (supportedRoutes and CallAudioState.ROUTE_EARPIECE != 0) routeNames.add("EARPIECE")
+            if (supportedRoutes and CallAudioState.ROUTE_SPEAKER != 0) routeNames.add("SPEAKER")
+            if (supportedRoutes and CallAudioState.ROUTE_WIRED_HEADSET != 0) routeNames.add("HEADSET")
+            if (supportedRoutes and CallAudioState.ROUTE_BLUETOOTH != 0) routeNames.add("BLUETOOTH")
+            
+            val routeName = when (currentRoute) {
+                CallAudioState.ROUTE_EARPIECE -> "EARPIECE"
+                CallAudioState.ROUTE_SPEAKER -> "SPEAKER"
+                CallAudioState.ROUTE_WIRED_HEADSET -> "HEADSET"
+                CallAudioState.ROUTE_BLUETOOTH -> "BLUETOOTH"
+                else -> "UNKNOWN"
+            }
+            
+            appLog("=== AUDIO ROUTING ($modeName) ===")
+            appLog("Device Profile: ${profile.name}")
+            appLog("Available Routes: [${routeNames.joinToString(", ")}]")
+            appLog("Current Route: $routeName (${currentRoute})")
+            appLog("tinymix: ${if (DeviceProfile.tinymixBin.isNotEmpty()) DeviceProfile.tinymixBin else "NOT FOUND"}")
+            appLog("requireSpeaker: ${profile.requireSpeakerMode}")
+            
+            // Explain audio flow for both modes
+            if (isServerMode) {
+                appLog("Audio Flow: GSM Caller <-> This Device (Earpiece/Mic) <-> RTP <-> SIP Client (Zoiper)")
+                appLog("  OUT: GSM voice -> Internal Mic -> AudioRecord -> RTP -> SIP Client")
+                appLog("  IN : SIP Client -> RTP -> AudioTrack -> Earpiece/Speaker -> GSM Caller")
+            } else if (isGatewayMode) {
+                appLog("Audio Flow: GSM Caller <-> This Device (Earpiece/Mic) <-> RTP <-> Asterisk")
+                appLog("  OUT: GSM voice -> Internal Mic -> AudioRecord -> RTP -> Asterisk/SIP Server")
+                appLog("  IN : Asterisk -> RTP -> AudioTrack -> Earpiece/Speaker -> GSM Caller")
+            }
+            appLog("================================")
+            
+            // Continue with audio bridge configuration only in gateway mode
+            if (!isGatewayMode) {
+                // Standalone mode - just log and return, let Android handle routing
+                appLog("Standalone: Using system audio routing")
                 audioManager?.let { am ->
-                    am.isMicrophoneMute = false
-                    enforceVolumes(am)
+                    appLog("Audio mode: ${am.mode}, stream volumes: voice=${am.getStreamVolume(AudioManager.STREAM_VOICE_CALL)}/${am.getStreamMaxVolume(AudioManager.STREAM_VOICE_CALL)}, ring=${am.getStreamVolume(AudioManager.STREAM_RING)}/${am.getStreamMaxVolume(AudioManager.STREAM_RING)}")
+                }
+                return
+            }
 
-                    // Delay mixer/volume setup until route change settles.
-                    Thread({
+            // GATEWAY MODE: Route to EARPIECE so the internal mic+speaker
+            // handle the GSM audio path directly. This is the correct path
+            // for bridging — GSM voice flows through the earpiece hardware
+            // (modem → ear speaker) and we capture it via VOICE_CALL source.
+            // Using SPEAKER here causes: loud bleed into mic → echo for caller,
+            // and AudioRecord may capture speaker output instead of modem audio.
+            // Only override to speaker if the device profile specifically requires it
+            // for hardware-level audio injection (some MSM/Exynos quirks).
+            
+            if (profile.requireSpeakerMode) {
+                // Legacy path: device profile mandates speaker for correct HAL routing
+                service.setAudioRoute(CallAudioState.ROUTE_SPEAKER)
+                appLog("Audio bridge: SPEAKER (required by device profile)")
+                appLog("*** NOTE: Speaker mode - mic will capture speaker output, may cause echo ***")
+            } else {
+                // Default path: earpiece — cleanest audio with no echo
+                // But ensure earpiece is available
+                if (supportedRoutes and CallAudioState.ROUTE_EARPIECE != 0) {
+                    service.setAudioRoute(CallAudioState.ROUTE_EARPIECE)
+                    appLog("Audio bridge: EARPIECE (internal mic + speaker) - OPTIMAL for bridge")
+                } else if (supportedRoutes and CallAudioState.ROUTE_SPEAKER != 0) {
+                    service.setAudioRoute(CallAudioState.ROUTE_SPEAKER)
+                    appLog("Audio bridge: SPEAKER (earpiece not available, fallback)")
+                } else {
+                    appLog("Audio bridge: DEFAULT (no specific route available)")
+                }
+            }
+
+            audioManager?.let { am ->
+                am.isMicrophoneMute = false
+                enforceVolumes(am)
+
+                // Delay mixer/volume setup until route change settles.
+                Thread({
                         try {
                             Thread.sleep(profile.routeChangeDelayMs)
                             enforceVolumes(am)

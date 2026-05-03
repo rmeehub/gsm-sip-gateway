@@ -29,6 +29,12 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         
+        // Request root permission first - critical for gateway operation
+        RootShell.init()
+        
+        // Show prevalidation details in logs
+        logPreValidation()
+        
         requestPermissions()
         requestBatteryOptimizationExemption()
         requestDefaultDialerRole()
@@ -41,6 +47,26 @@ class MainActivity : ComponentActivity() {
                 InCallScreen(viewModel)
             }
         }
+    }
+
+    private fun logPreValidation() {
+        val prefs = getSharedPreferences("gateway", MODE_PRIVATE)
+        val server = prefs.getString("server", "") ?: ""
+        val port = prefs.getInt("port", 5060)
+        val user = prefs.getString("user", "") ?: ""
+        val localServer = prefs.getBoolean("local_server", false)
+        val usePublicIp = prefs.getBoolean("use_public_ip", false)
+        val autoconnect = prefs.getBoolean("autoconnect", true)
+        
+        Log.i("GatewayApp", "=== CONFIGURATION PREVALIDATION ===")
+        Log.i("GatewayApp", "Mode: ${if (localServer) "SERVER (PBX)" else "CLIENT"}")
+        Log.i("GatewayApp", "Server: ${if (server.isNotEmpty()) server else "N/A"}")
+        Log.i("GatewayApp", "Port: $port")
+        Log.i("GatewayApp", "User: ${if (user.isNotEmpty()) user else "N/A"}")
+        Log.i("GatewayApp", "Auto-connect: $autoconnect")
+        Log.i("GatewayApp", "Public IP Mode: $usePublicIp")
+        Log.i("GatewayApp", "Root Shell: ${if (RootShell.isAlive) "ACTIVE" else "INACTIVE"}")
+        Log.i("GatewayApp", "====================================")
     }
 
     private fun autoStartGateway() {
