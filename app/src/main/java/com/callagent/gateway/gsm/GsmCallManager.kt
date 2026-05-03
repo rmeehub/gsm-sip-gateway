@@ -80,7 +80,7 @@ object GsmCallManager {
         
         // Log audio state when call is added
         val supportedRoutes = service.callAudioState?.supportedRouteMask ?: 0
-        val currentRoute = service.callAudioState?.currentRoute ?: 0
+        val route = service.callAudioState?.route ?: 0
         val isMuted = service.callAudioState?.isMuted ?: false
         val modeName = if (listener != null) {
             if (com.callagent.gateway.web.WebServer.isRunning()) "SERVER (PBX)" else "CLIENT"
@@ -92,7 +92,7 @@ object GsmCallManager {
         if (supportedRoutes and CallAudioState.ROUTE_WIRED_HEADSET != 0) routeNames.add("HS")
         if (supportedRoutes and CallAudioState.ROUTE_BLUETOOTH != 0) routeNames.add("BT")
         
-        appLog("[$modeName] Call added: $number, state=${call.state}, routes=[${routeNames.joinToString(", ")}], current=${currentRoute}, muted=$isMuted")
+        appLog("[$modeName] Call added: $number, state=${call.state}, routes=[${routeNames.joinToString(", ")}], current=${route}, muted=$isMuted")
 
         when (call.state) {
             Call.STATE_RINGING -> {
@@ -159,13 +159,13 @@ object GsmCallManager {
 
         // Log audio state on any state change
         inCallService?.let { service ->
-            val currentRoute = service.callAudioState?.currentRoute ?: 0
+            val route = service.callAudioState?.route ?: 0
             val isMuted = service.callAudioState?.isMuted ?: false
             val modeName = if (listener != null) {
                 if (com.callagent.gateway.web.WebServer.isRunning()) "SERVER (PBX)" else "CLIENT"
             } else "STANDALONE"
             
-            val routeName = when (currentRoute) {
+            val routeName = when (route) {
                 CallAudioState.ROUTE_EARPIECE -> "EARPIECE"
                 CallAudioState.ROUTE_SPEAKER -> "SPEAKER"
                 CallAudioState.ROUTE_WIRED_HEADSET -> "HEADSET"
@@ -352,13 +352,14 @@ object GsmCallManager {
         
         // Run ABOX/ALSA discovery on first call for diagnostics
         runMixerDiscovery()
-        
-        inCallService?.let { service ->
+
+        try {
+            inCallService?.let { service ->
             val audioManager = service.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
             
             // Log current supported routes for diagnostics
             val supportedRoutes = service.callAudioState?.supportedRouteMask ?: 0
-            val currentRoute = service.callAudioState?.currentRoute ?: 0
+            val route = service.callAudioState?.route ?: 0
             
             val routeNames = mutableListOf<String>()
             if (supportedRoutes and CallAudioState.ROUTE_EARPIECE != 0) routeNames.add("EARPIECE")
@@ -366,7 +367,7 @@ object GsmCallManager {
             if (supportedRoutes and CallAudioState.ROUTE_WIRED_HEADSET != 0) routeNames.add("HEADSET")
             if (supportedRoutes and CallAudioState.ROUTE_BLUETOOTH != 0) routeNames.add("BLUETOOTH")
             
-            val routeName = when (currentRoute) {
+            val routeName = when (route) {
                 CallAudioState.ROUTE_EARPIECE -> "EARPIECE"
                 CallAudioState.ROUTE_SPEAKER -> "SPEAKER"
                 CallAudioState.ROUTE_WIRED_HEADSET -> "HEADSET"
@@ -377,7 +378,7 @@ object GsmCallManager {
             appLog("=== AUDIO ROUTING ($modeName) ===")
             appLog("Device Profile: ${profile.name}")
             appLog("Available Routes: [${routeNames.joinToString(", ")}]")
-            appLog("Current Route: $routeName (${currentRoute})")
+            appLog("Current Route: $routeName (${route})")
             appLog("tinymix: ${if (DeviceProfile.tinymixBin.isNotEmpty()) DeviceProfile.tinymixBin else "NOT FOUND"}")
             appLog("requireSpeaker: ${profile.requireSpeakerMode}")
             
