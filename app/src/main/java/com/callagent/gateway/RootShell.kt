@@ -43,10 +43,39 @@ object RootShell {
     fun init() {
         if (alive && process != null) return
         try {
-            val proc = Runtime.getRuntime().exec("su")
+            Log.i(TAG, "Requesting root permission via su...")
+            val proc = Runtime.getRuntime().exec(arrayOf("su"))
             process = proc
             writer = OutputStreamWriter(proc.outputStream)
             reader = BufferedReader(InputStreamReader(proc.inputStream))
+
+            // Consume stderr in a separate thread to prevent Magisk/KSU from
+            // blocking the popup due to a full stderr pipe
+            val errThread = Thread({
+                try {
+                    val errReader = BufferedReader(InputStreamReader(proc.errorStream))
+                    var line: String?
+                    while (errReader.readLine().also { line = it } != null) {
+                        Log.d(TAG, "su stderr: $line")
+                    }
+                } catch (_: Exception) {}
+            }, "RootShell-ErrReader").apply { isDaemon = true; start() }
+
+            // Send a simple id command to trigger the root popup and verify
+            val testLatch = CountDownLatch(1)
+            val testCmd = Command("id", testLatch)
+            commandQueue.put(testCmd)
+            
+            // Wait up to 30 seconds for user to grant root in Magisk/KSU popup
+            val granted = testCmd.latch.await(30, TimeUnit.SECONDS)
+            if (!granted || testCmd.exitCode != 0) {
+                Log.e(TAG, "Root permission DENIED (exit=${testCmd.exitCode})")
+                proc.destroy()
+                alive = false
+                return
+            }
+
+            Log.i(TAG, "Root permission GRANTED: ${testCmd.output}")
             alive = true
 
             workerThread = Thread({
