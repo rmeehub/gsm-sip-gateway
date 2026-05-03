@@ -19,6 +19,7 @@ import android.os.PowerManager
 import android.telephony.TelephonyManager
 import android.util.Log
 import com.callagent.gateway.BuildConfig
+import com.callagent.gateway.DeviceProfile
 import com.callagent.gateway.GatewayApp
 import com.callagent.gateway.MainActivity
 import com.callagent.gateway.R
