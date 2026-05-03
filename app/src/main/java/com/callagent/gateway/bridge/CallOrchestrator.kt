@@ -546,7 +546,6 @@ class CallOrchestrator(
             RtpPacket.PT_PCMA -> "PCMA (G.711 A-law)"
             RtpPacket.PT_PCMU -> "PCMU (G.711 mu-law)"
             RtpPacket.PT_G722 -> "G.722"
-            RtpPacket.PT_OPUS -> "Opus"
             else -> "Unknown (PT=$payloadType)"
         }
     }

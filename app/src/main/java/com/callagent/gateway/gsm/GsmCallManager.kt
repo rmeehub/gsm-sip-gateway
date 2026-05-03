@@ -142,6 +142,20 @@ object GsmCallManager {
         listener?.onGsmCallEnded(call)
     }
 
+    private fun stateToString(state: Int): String {
+        return when (state) {
+            Call.STATE_NEW -> "NEW"
+            Call.STATE_CONNECTING -> "CONNECTING"
+            Call.STATE_RINGING -> "RINGING"
+            Call.STATE_DIALING -> "DIALING"
+            Call.STATE_CONNECTED -> "CONNECTED"
+            Call.STATE_HOLD -> "HOLD"
+            Call.STATE_DISCONNECTED -> "DISCONNECTED"
+            Call.STATE_DISCONNECTING -> "DISCONNECTING"
+            else -> "STATE_$state"
+        }
+    }
+
     fun onCallStateChanged(call: Call, state: Int) {
         activeCallState = state
 

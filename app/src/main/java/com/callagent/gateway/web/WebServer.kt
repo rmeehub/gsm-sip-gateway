@@ -157,11 +157,8 @@ object WebServer {
 
                         // Real-time log stream via Server-Sent Events
                         get("/api/logs/stream") {
-                            call.respondText("text/event-stream", ContentType.Text.Plain) {
-                                GatewayService.logBuffer.forEach { log ->
-                                    append("data: $log\n\n")
-                                }
-                            }
+                            val logs = GatewayService.drainLogBuffer()
+                            call.respondText(logs.joinToString("\n"), ContentType.Text.Plain)
                         }
                     }
                 }.start(wait = false)
@@ -240,12 +237,6 @@ object WebServer {
         } catch (e: Exception) {
             return input // Fallback
         }
-    }
-
-    /** Check if a client is authenticated for PBX mode */
-    fun isClientAuthenticated(extension: String): Boolean {
-        val client = registeredClients[extension] ?: return false
-        return client.authVerified && client.expiry > System.currentTimeMillis()
     }
 
     private fun getHtml(): String = """

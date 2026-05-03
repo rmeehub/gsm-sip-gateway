@@ -531,34 +531,15 @@ class GatewayService : Service() {
     private fun acquireLocks() {
         val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
         wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "gateway:sip").apply {
-            // Keep device awake for as long as needed
-            acquire(24 * 60 * 60 * 1000L) // 24 hours max
+            acquire()
         }
 
         val wm = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
         wifiLock = wm.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "gateway:wifi").apply {
-            // Keep WiFi always on - critical for SIP connection
-            acquire(24 * 60 * 60 * 1000L) // 24 hours max
+            acquire()
         }
         
-        // Ensure WiFi doesn't turn off when screen goes off
-        // Using high performance mode for better connectivity
-        val prefs = getSharedPreferences("gateway", MODE_PRIVATE)
-        if (prefs.getBoolean("keep_wifi_always_on", true)) {
-            // Force WiFi to stay on - this prevents power saving
-            try {
-                val connMgr = getSystemService(Context.CONNECTIVITY_SERVICE) as android.net.ConnectivityManager
-                val network = connMgr.activeNetwork
-                val capabilities = connMgr.getNetworkCapabilities(network)
-                if (capabilities?.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI) == true) {
-                    Log.i(TAG, "WiFi is active and will stay connected")
-                }
-            } catch (e: Exception) {
-                Log.w(TAG, "Could not verify WiFi status: ${e.message}")
-            }
-        }
-        
-        Log.i(TAG, "Wake + WiFi locks acquired (WiFi will stay active)")
+        Log.i(TAG, "Wake + WiFi locks acquired")
     }
 
     private fun releaseLocks() {

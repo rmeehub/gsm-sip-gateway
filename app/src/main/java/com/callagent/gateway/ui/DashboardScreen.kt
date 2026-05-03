@@ -25,6 +25,7 @@ fun DashboardScreen(viewModel: MainViewModel, modifier: Modifier = Modifier) {
     val context = LocalContext.current
     val prefs = remember { context.getSharedPreferences("gateway", android.content.Context.MODE_PRIVATE) }
     val webEnabled = prefs.getBoolean("enable_web_server", true)
+    val localIp = remember { getLocalIpAddress() }
 
     Column(
         modifier = modifier
@@ -142,7 +143,7 @@ fun DashboardScreen(viewModel: MainViewModel, modifier: Modifier = Modifier) {
                     }
                     Spacer(modifier = Modifier.height(8.dp))
                     Text(
-                        text = if (ip != null) "http://$ip:8080" else "Waiting for network...",
+                        text = if (localIp != null) "http://$localIp:8080" else "Waiting for network...",
                         fontSize = 18.sp,
                         color = MaterialTheme.colorScheme.primary,
                         fontWeight = FontWeight.SemiBold
@@ -165,7 +166,7 @@ fun DashboardScreen(viewModel: MainViewModel, modifier: Modifier = Modifier) {
                 Column(modifier = Modifier.padding(16.dp)) {
                     Text("SIP Client Details (Zoiper/Softphone)", fontWeight = FontWeight.Bold, fontSize = 16.sp)
                     Spacer(modifier = Modifier.height(8.dp))
-                    Text("Server IP: $ip", fontSize = 14.sp)
+                    Text("Server IP: $localIp", fontSize = 14.sp)
                     Text("Port: 5060", fontSize = 14.sp)
                     Text("Username: 100", fontSize = 14.sp, fontWeight = FontWeight.Bold)
                     Text("Password: 1234", fontSize = 14.sp, fontWeight = FontWeight.Bold)
