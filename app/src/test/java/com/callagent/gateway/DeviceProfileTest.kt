@@ -13,7 +13,7 @@ import org.junit.Test
  * into [MixerProfile], [AudioCalibration] and [HalRoutingProfile].  They
  * exercise [DeviceProfile.match] (the testable core of [DeviceProfile.detect])
  * rather than Android's Build.* constants, and assert that every factory
- * yields a fully-populated profile with the original acoustic-coupling policy.
+ * yields a fully-populated profile.
  */
 class DeviceProfileTest {
 
@@ -94,35 +94,13 @@ class DeviceProfileTest {
         assertEquals("MSM8930 (S4 Mini)", p.name)
     }
 
-    // ── allowAcousticCoupling policy (must be preserved exactly) ──
-
-    @Test
-    fun `pixel7 forbids acoustic coupling`() {
-        assertFalse(DeviceProfile.pixel7Tensor().routing.allowAcousticCoupling)
-    }
+    // ── Pixel 7 mic-isolation invariant ──
 
     @Test
     fun `pixel7 mutes physical mic at API and tinymix`() {
         val p = DeviceProfile.pixel7Tensor()
         assertTrue(p.routing.muteMicrophoneAtApi)
         assertTrue(p.mixer.micMuteCmd.contains("Voice Call Mic Mute"))
-    }
-
-    @Test
-    fun `exynos9820 allows acoustic coupling`() {
-        // Exynos capture relies on the physical mic picking up caller audio
-        // from the speaker — digital capture is silent on this HAL.
-        assertTrue(DeviceProfile.exynos9820().routing.allowAcousticCoupling)
-    }
-
-    @Test
-    fun `msm8953 forbids acoustic coupling`() {
-        assertFalse(DeviceProfile.msm8953().routing.allowAcousticCoupling)
-    }
-
-    @Test
-    fun `msm8930 forbids acoustic coupling`() {
-        assertFalse(DeviceProfile.msm8930().routing.allowAcousticCoupling)
     }
 
     // ── Structural completeness: every factory is fully populated ──

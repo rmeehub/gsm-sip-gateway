@@ -487,9 +487,6 @@ data class DeviceProfile(
                 routeChangeDelayMs = 500,
                 appopsPropagationMs = 300,
                 isAbox = true,
-                // Exynos capture relies on the physical mic picking up caller audio
-                // from the speaker — the HAL delivers silence on digital sources.
-                allowAcousticCoupling = true,
             ),
         )
 
@@ -775,14 +772,6 @@ data class HalRoutingProfile(
 
     /** Whether this is a Samsung ABOX (Exynos) device. */
     val isAbox: Boolean = false,
-
-    /** Explicitly allow the bridge to proceed when the physical mic is NOT
-     *  fully isolated (acoustic coupling).  Set ONLY for devices whose
-     *  capture path deliberately uses the physical mic to pick up caller
-     *  audio from the speaker (e.g. Exynos where digital capture is silent).
-     *  Defaults to false — the gateway must be a pure relay and FAIL CLOSED
-     *  if isolation cannot be verified. */
-    val allowAcousticCoupling: Boolean = false,
 
     /** Mute the physical mic via AudioManager.isMicrophoneMute during bridge.
      *  Samsung Exynos must stay false (HAL treats it as full uplink mute).

@@ -60,11 +60,6 @@ class CallOrchestrator(
     @Volatile private var rtpTargetAddr: String? = null
     @Volatile private var rtpTargetPort: Int = 0
 
-    // SIP call retry: if SIP fails while GSM is ringing, retry before giving up.
-    // Transient network issues or socket races can kill the first attempt.
-    private var sipCallRetries = 0
-    private val maxSipRetries = 2
-
     /** Current bridge state */
     @Volatile var bridgeState: BridgeState = BridgeState.IDLE
         private set
@@ -173,35 +168,8 @@ class CallOrchestrator(
 
     /** Handles termination from both SipClient.Listener and SipCall.Listener */
     override fun onCallTerminated(call: SipCall) {
-        Log.i(TAG, "SIP call terminated: ${call.callId} (bridge=$bridgeState, retries=$sipCallRetries)")
+        Log.i(TAG, "SIP call terminated: ${call.callId} (bridge=$bridgeState)")
         if (call != activeSipCall) return
-
-        // If GSM is still ringing and we haven't exhausted retries, try again.
-        // Transient network issues or socket races can kill the first SIP attempt.
-        if ((bridgeState == BridgeState.SIP_CALLING || bridgeState == BridgeState.SIP_RINGING)
-            && sipCallRetries < maxSipRetries && activeGsmCall != null) {
-            sipCallRetries++
-            Log.w(TAG, "SIP call failed while GSM ringing — retrying ($sipCallRetries/$maxSipRetries)")
-            listener?.onStateChanged(bridgeState, "SIP retry $sipCallRetries/$maxSipRetries")
-            activeSipCall = null
-            sipClient.removeCall(call.callId)
-            pendingRtpAddr = null
-            pendingRtpPort = 0
-            activeRtpSession?.stop()
-            activeRtpSession = null
-            wiredRtpAddr = null
-            wiredRtpPort = 0
-            rtpTargetAddr = null
-            rtpTargetPort = 0
-            // Retry after a short delay to let any transient issue settle
-            Thread({
-                try { Thread.sleep(1000) } catch (_: InterruptedException) { return@Thread }
-                if (bridgeState != BridgeState.SIP_CALLING && bridgeState != BridgeState.SIP_RINGING) return@Thread
-                activeGsmCall?.let { handleInboundFlow(it) }
-                    ?: Log.e(TAG, "SIP retry: GSM call gone, aborting")
-            }, "SIP-Retry-$sipCallRetries").start()
-            return
-        }
 
         tearDown("SIP call ended")
     }
@@ -218,7 +186,6 @@ class CallOrchestrator(
             return
         }
 
-        sipCallRetries = 0
         bridgeState = BridgeState.GSM_RINGING
         activeGsmCall = call
         listener?.onStateChanged(bridgeState, "GSM call from $number")
@@ -538,18 +505,16 @@ class CallOrchestrator(
         forceAllowRecordAudio()
 
         val profile = GsmCallManager.profile
-        if (!profile.routing.allowAcousticCoupling) {
-            val guard = MicIsolationGuard(context, profile)
-            when (val iso = guard.verify { msg -> listener?.onRtpStats(msg) }) {
-                is MicIsolationGuard.MicIsolationResult.NotIsolated -> {
-                    val err = "Mic not isolated (${"%.1f".format(iso.rmsDb)} dBFS)"
-                    Log.e(TAG, "$err — refusing bridge")
-                    listener?.onError(err)
-                    tearDown(err)
-                    return
-                }
-                MicIsolationGuard.MicIsolationResult.Isolated -> { }
+        val guard = MicIsolationGuard(context, profile)
+        when (val iso = guard.verify { msg -> listener?.onRtpStats(msg) }) {
+            is MicIsolationGuard.MicIsolationResult.NotIsolated -> {
+                val err = "Mic not isolated (${"%.1f".format(iso.rmsDb)} dBFS)"
+                Log.e(TAG, "$err — refusing bridge")
+                listener?.onError(err)
+                tearDown(err)
+                return
             }
+            MicIsolationGuard.MicIsolationResult.Isolated -> { }
         }
 
         activeRtpSession?.stop()
