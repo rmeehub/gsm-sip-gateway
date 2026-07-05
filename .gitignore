@@ -4,13 +4,18 @@ gateway-magisk.zip
 magisk/system/priv-app/Gateway/
 !magisk/system/priv-app/PermissionController/
 local.properties
+.env
 .env.build
+recordings/
 
 # Gradle
 .gradle/
 build/
 app/build/
 
+
+# Python tooling (SignalWire CLI)
+.venv-signalwire/
 
 # IDE
 .idea/

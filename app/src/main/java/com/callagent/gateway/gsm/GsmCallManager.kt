@@ -43,6 +43,18 @@ object GsmCallManager {
      *  app log viewer (Settings tab).  Set by GatewayService. */
     @Volatile var logCallback: ((String) -> Unit)? = null
 
+    /** Set when [batchMixerSetup] finishes; RtpSession waits past this before capture. */
+    @Volatile var mixerSetupCompletedAtMs: Long = 0
+
+    /**
+     * Relay mode: silence the gateway's own earpiece so the caller's voice isn't
+     * audible on the gateway phone. In WS-direct mode the gateway needs no local
+     * call audio (caller is captured via VOICE_DOWNLINK, the agent is injected
+     * via STREAM_MUSIC/incall_music), so STREAM_VOICE_CALL is forced to 0. Set by
+     * the orchestrator before answering; reset on call end.
+     */
+    @Volatile var muteLocalEarpiece = false
+
     /** Log to both Android logcat AND the app log viewer. */
     private fun appLog(msg: String) {
         Log.i(TAG, msg)
@@ -216,7 +228,7 @@ object GsmCallManager {
     }
 
     /** Music volume percent — from device profile. */
-    val MUSIC_VOL_PERCENT: Int get() = profile.musicVolPercent
+    val MUSIC_VOL_PERCENT: Int get() = profile.audio.musicVolPercent
 
     /** Run mixer discovery once on first audio bridge setup. */
     @Volatile private var discoveryDone = false
@@ -247,6 +259,7 @@ object GsmCallManager {
     private fun configureAudioBridge() {
         if (listener == null) return // Standalone mode: let Android handle audio routing natively
         
+        mixerSetupCompletedAtMs = 0
         try {
             // Run ABOX/ALSA discovery on first call for diagnostics
             runMixerDiscovery()
@@ -259,24 +272,25 @@ object GsmCallManager {
                 // AFTER the AudioRecord is running.  Setting them before capture
                 // kills VOICE_CALL capture (confirmed v2.8.33).
 
-                if (profile.requireSpeakerMode) {
+                if (profile.routing.requireSpeakerMode) {
                     service.setAudioRoute(CallAudioState.ROUTE_SPEAKER)
                 }
 
                 audioManager?.let { am ->
-                    // Do NOT set isMicrophoneMute = true here!
-                    // v2.8.50: Samsung Exynos HAL interprets mic mute as "mute
-                    // entire voice uplink to modem", which blocks NSRC-injected
-                    // AudioTrack audio from reaching the caller.
-                    // MSM8930: mic muting is handled at ALSA level (DEC MUX=ZERO,
-                    // MICBIAS=0) in mixerSetupCmd — no need for API-level mute.
-                    am.isMicrophoneMute = false
+                    // Samsung Exynos HAL treats API mic mute as full uplink mute
+                    // (blocks incall_music injection).  Pixel/Tensor use tinymix +
+                    // INCALL_TX and can safely mute the physical mic here.
+                    if (profile.routing.muteMicrophoneAtApi) {
+                        am.isMicrophoneMute = true
+                    } else {
+                        am.isMicrophoneMute = false
+                    }
                     enforceVolumes(am)
 
                     // Delay mixer/volume setup until speaker route change settles.
                     Thread({
                         try {
-                            Thread.sleep(profile.routeChangeDelayMs)
+                            Thread.sleep(profile.routing.routeChangeDelayMs)
                             enforceVolumes(am)
                             batchMixerSetup()
                         } catch (_: Exception) {}
@@ -293,7 +307,7 @@ object GsmCallManager {
                     // The re-route served no purpose and broke speaker mode.
 
                     val tinymixStatus = if (DeviceProfile.tinymixBin.isNotEmpty()) "available" else "NOT FOUND"
-                    val route = if (profile.requireSpeakerMode) "speaker" else "earpiece"
+                    val route = if (profile.routing.requireSpeakerMode) "speaker" else "earpiece"
                     appLog("Audio bridge: $route, mode=${am.mode}, tinymix=$tinymixStatus, profile=${profile.name}")
                 }
             }
@@ -319,9 +333,14 @@ object GsmCallManager {
         // Exynos 9820: 80% — no muteVoiceRx, need loud speaker for mic capture.
         // Volume=0 can confuse audio policy into treating call as inactive.
         try {
-            val vcVol = if (profile.voiceCallVolPercent > 0) {
+            val vcVol = if (muteLocalEarpiece) {
+                // Relay mode: mute the local earpiece entirely. Capture uses
+                // VOICE_DOWNLINK and injection uses STREAM_MUSIC, so nothing here
+                // depends on STREAM_VOICE_CALL being audible.
+                0
+            } else if (profile.audio.voiceCallVolPercent > 0) {
                 val maxVc = am.getStreamMaxVolume(AudioManager.STREAM_VOICE_CALL)
-                (maxVc * profile.voiceCallVolPercent / 100).coerceAtLeast(1)
+                (maxVc * profile.audio.voiceCallVolPercent / 100).coerceAtLeast(1)
             } else {
                 1
             }
@@ -342,9 +361,11 @@ object GsmCallManager {
 
     /** Restore audio state when call ends */
     private fun restoreAudio() {
+        muteLocalEarpiece = false
         if (listener == null) return // Standalone mode
-        
+
         try {
+            mixerSetupCompletedAtMs = 0
             // Single su call to restore all mixer controls
             batchMixerRestore()
 
@@ -355,8 +376,8 @@ object GsmCallManager {
                 audioManager?.let { am ->
                     am.isMicrophoneMute = false
                     // Clear incall_music HAL parameter for clean state on next call
-                    if (profile.incallMusicParam.isNotEmpty()) {
-                        am.setParameters("${profile.incallMusicParam}=false")
+                    if (profile.routing.incallMusicParam.isNotEmpty()) {
+                        am.setParameters("${profile.routing.incallMusicParam}=false")
                     }
 
                     // Unmute voice call stream and restore volume for normal phone use
@@ -383,11 +404,11 @@ object GsmCallManager {
      * it with the discovered full path at runtime.
      */
     fun batchMixerSetup() {
-        if (profile.mixerSetupCmd.isEmpty()) {
+        if (profile.mixer.mixerSetupCmd.isEmpty()) {
             appLog("Mixer: no commands for ${profile.name}")
             return
         }
-        val resolvedSetup = DeviceProfile.resolveCmd(profile.mixerSetupCmd)
+        val resolvedSetup = DeviceProfile.resolveCmd(profile.mixer.mixerSetupCmd)
         if (resolvedSetup.isEmpty()) {
             appLog("Mixer: tinymix NOT FOUND — cannot set controls for ${profile.name}")
             return
@@ -397,7 +418,7 @@ object GsmCallManager {
             
             // Step 1: Readback BEFORE — see what HAL set during call setup
             // Only on Samsung ABOX devices to avoid "control not found" noise on Qualcomm
-            if (profile.isAbox) {
+            if (profile.routing.isAbox) {
                 val before = RootShell.execForOutput(buildString {
                     append("echo 'NSRC0B:'; $bin 'ABOX NSRC0 Bridge' 2>&1; ")
                     append("echo 'NSRC1B:'; $bin 'ABOX NSRC1 Bridge' 2>&1; ")
@@ -411,9 +432,10 @@ object GsmCallManager {
             // Use execForOutput to capture discovery/diagnostic output from setup commands
             val setupOutput = RootShell.execForOutput(resolvedSetup, timeoutMs = 8000)
             if (setupOutput.isNotBlank()) appLog("Mixer setup: $setupOutput")
+            mixerSetupCompletedAtMs = System.currentTimeMillis()
 
             // Step 3: Readback AFTER — verify controls were actually changed
-            if (profile.isAbox) {
+            if (profile.routing.isAbox) {
                 val readback = RootShell.execForOutput(buildString {
                     append("echo 'NSRC0B:'; $bin 'ABOX NSRC0 Bridge' 2>&1; ")
                     append("echo 'NSRC1B:'; $bin 'ABOX NSRC1 Bridge' 2>&1; ")
@@ -431,11 +453,11 @@ object GsmCallManager {
 
     /** Restore mixer state when call ends using the device profile. */
     fun batchMixerRestore() {
-        if (profile.mixerRestoreCmd.isEmpty()) {
+        if (profile.mixer.mixerRestoreCmd.isEmpty()) {
             Log.i(TAG, "batchMixerRestore: no mixer commands for ${profile.name}")
             return
         }
-        val resolvedRestore = DeviceProfile.resolveCmd(profile.mixerRestoreCmd)
+        val resolvedRestore = DeviceProfile.resolveCmd(profile.mixer.mixerRestoreCmd)
         if (resolvedRestore.isEmpty()) {
             Log.i(TAG, "batchMixerRestore: tinymix not found, skipping")
             return
@@ -455,4 +477,50 @@ object GsmCallManager {
     /** Get current call number */
     val currentNumber: String?
         get() = activeCall?.details?.handle?.schemeSpecificPart
+
+    /**
+     * Decide whether a post-restore tinymix readback [probe] still reflects an
+     * active-call mixer state instead of the idle default. Used to detect a
+     * defective teardown (e.g. the Pixel 7 defect that left mic mutes ON and
+     * INCALL playback/mixers ON at REST) so [batchMixerRestore] can be retried.
+     *
+     * Pure over the probe string, so it is unit-testable without a device.
+     * A control reports "stuck" if any watched control holds its in-call value:
+     *  - mute/enable controls (Voice Tx/Rx Mute, INCALL playback, EP TX mixers,
+     *    Incall_Music mixers) are stuck when =1
+     *  - Main Mic Switch (generic Exynos) is stuck when =0 (mic disabled)
+     *  - =N/A or a missing control never counts as stuck
+     */
+    fun mixerLooksStuck(probe: String): Boolean {
+        if (probe.isBlank()) return false
+        // name → value that indicates the call path is still up.
+        // Mute/inject controls are active at 1; the Exynos mic switch is off (0) during a call.
+        val stuckWhenOne = setOf(
+            "Voice Call Mic Mute",
+            "Incall Mic Mute",
+            "Incall Playback Stream0",
+            "EP2 TX Mixer INCALL_TX",
+            "EP6 TX Mixer INCALL_TX",
+            "Voice Tx Mute",
+            "Voice Rx Device Mute",
+            "Incall_Music Audio Mixer MultiMedia1",
+            "Incall_Music Audio Mixer MultiMedia2",
+        )
+        val stuckWhenZero = setOf("Main Mic Switch")
+
+        val values = HashMap<String, String>()
+        // tolerate "Name = value", "Name=value", leading/trailing spaces, multiple lines
+        val regex = Regex("""^\s*([^=\n]+?)\s*=\s*([^\n]*?)\s*$""")
+        for (line in probe.lines()) {
+            val m = regex.matchEntire(line) ?: continue
+            values[m.groupValues[1]] = m.groupValues[2]
+        }
+
+        for ((control, value) in values) {
+            if (value == "N/A") continue
+            if (control in stuckWhenOne && value == "1") return true
+            if (control in stuckWhenZero && value == "0") return true
+        }
+        return false
+    }
 }

@@ -47,6 +47,9 @@ class SipCall(
     var remoteRtpAddress: String? = null
     var negotiatedPayloadType: Int = 8 // default PCMA, updated from SDP
 
+    /** True once [Listener.onRtpReady] has been invoked for the current remote endpoint */
+    @Volatile private var rtpNotified = false
+
     // Caller info (for inbound and outbound caller-ID)
     var callerNumber: String? = null
     var callerDisplayName: String? = null
@@ -88,24 +91,37 @@ class SipCall(
                 val ackCseq = msg.cseq?.split(" ")?.firstOrNull()?.toIntOrNull() ?: localCseq
                 sendAck(ackCseq)
 
-                // Guard against duplicate 200 OK (Asterisk retransmits until ACK)
+                // Guard against duplicate 200 OK (server retransmits until ACK).
+                // Still notify on late/retransmitted SDP — SignalWire may send RTP
+                // details only on the retransmit after the bridge is already BRIDGED.
                 if (state == State.ANSWERED) {
                     Log.i(TAG, "Duplicate 200 OK for call $callId (already answered), ACKed")
+                    notifyRtpReady()
                     return true
                 }
 
                 Log.i(TAG, "SDP codec: pt=$negotiatedPayloadType codecs=${msg.sdpCodecs}")
                 state = State.ANSWERED
-
-                val addr = remoteRtpAddress ?: remoteContactAddress?.first
-                Log.i(TAG, "200 OK RTP: addr=$addr port=$remoteRtpPort listener=${listener != null}")
-                if (addr != null && remoteRtpPort > 0) {
-                    listener?.onRtpReady(this, addr, remoteRtpPort, negotiatedPayloadType)
-                } else {
-                    Log.w(TAG, "200 OK missing RTP info — addr=$addr port=$remoteRtpPort, cannot bridge")
-                    sipClient.logListener?.invoke("200 OK missing RTP: addr=$addr port=$remoteRtpPort")
-                }
+                notifyRtpReady()
                 listener?.onCallAnswered(this)
+                return true
+            }
+
+            // In-dialog re-INVITE (session update with new SDP after initial answer)
+            msg.isRequest && msg.method == "INVITE" && state == State.ANSWERED -> {
+                Log.i(TAG, "In-dialog re-INVITE for call $callId")
+                msg.sdpRtpPort?.let { remoteRtpPort = it }
+                msg.sdpAddress?.let { remoteRtpAddress = it }
+                negotiatedPayloadType = msg.sdpPreferredPayloadType
+                rtpNotified = false
+
+                val ok = SipBuilder.ok200(
+                    msg, sipClient.username, sipClient.publicIp, sipClient.localPort,
+                    localRtpPort = localRtpPort.takeIf { it > 0 },
+                    toTag = remoteTag ?: localTag
+                )
+                sipClient.sendResponse(ok, remoteContactAddress ?: sipClient.serverAddress)
+                notifyRtpReady()
                 return true
             }
 
@@ -134,8 +150,9 @@ class SipCall(
                 val authParams = SipAuth.parseChallenge(msg)
                 if (authParams != null) {
                     authHandled = true
-                    Log.i(TAG, "INVITE auth challenge, re-sending with credentials")
-                    sipClient.resendInviteWithAuth(this, authParams)
+                    val isProxyAuth = msg.statusCode == 407
+                    Log.i(TAG, "INVITE ${msg.statusCode} auth challenge, re-sending with credentials (proxyAuth=$isProxyAuth)")
+                    sipClient.resendInviteWithAuth(this, authParams, isProxyAuth)
                 }
                 return true
             }
@@ -224,14 +241,16 @@ class SipCall(
 
     /** Send ACK for a received 200 OK */
     private fun sendAck(cseq: Int) {
-        val uri = remoteContactUri ?: return
+        val uri = remoteContactUri ?: "sip:${sipClient.serverDomain}:${sipClient.serverPort}"
         val ack = SipBuilder.ack(
             uri, null, toHeader, fromHeader,
             callId, cseq,
             sipClient.username, sipClient.publicIp, sipClient.localPort
         )
-        sipClient.sendResponse(ack, remoteContactAddress ?: sipClient.serverAddress)
-        Log.d(TAG, "Sent ACK for call $callId (CSeq: $cseq)")
+        // Send ACK to the SIP server address, not the Contact header address.
+        // Providers like Twilio use internal IPs in Contact that are not routable.
+        sipClient.sendResponse(ack, sipClient.serverAddress)
+        Log.d(TAG, "Sent ACK for call $callId (CSeq: $cseq) to ${sipClient.serverAddress}")
     }
 
     /** Send BYE to terminate the call */
@@ -248,6 +267,18 @@ class SipCall(
         state = State.TERMINATED
         Log.i(TAG, "Sent BYE for call $callId")
         listener?.onCallTerminated(this)
+    }
+
+    private fun notifyRtpReady() {
+        val addr = remoteRtpAddress ?: remoteContactAddress?.first
+        Log.i(TAG, "RTP notify: addr=$addr port=$remoteRtpPort listener=${listener != null} notified=$rtpNotified")
+        if (addr != null && remoteRtpPort > 0) {
+            listener?.onRtpReady(this, addr, remoteRtpPort, negotiatedPayloadType)
+            rtpNotified = true
+        } else if (!rtpNotified) {
+            Log.w(TAG, "SDP missing RTP info — addr=$addr port=$remoteRtpPort, cannot bridge")
+            sipClient.logListener?.invoke("SDP missing RTP: addr=$addr port=$remoteRtpPort")
+        }
     }
 
     companion object {

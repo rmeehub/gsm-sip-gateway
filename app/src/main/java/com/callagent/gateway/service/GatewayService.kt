@@ -18,8 +18,10 @@ import android.os.IBinder
 import android.os.PowerManager
 import android.util.Log
 import com.callagent.gateway.BuildConfig
+import com.callagent.gateway.SipConfig
 import com.callagent.gateway.GatewayApp
 import com.callagent.gateway.MainActivity
+import com.callagent.gateway.MicCapabilityGuard
 import com.callagent.gateway.R
 import com.callagent.gateway.RootShell
 import com.callagent.gateway.bridge.CallOrchestrator
@@ -50,6 +52,7 @@ class GatewayService : Service() {
     private var cfgUser = ""
     private var cfgPass = ""
     private var cfgLocalServer = false
+    private var cfgOutboundTarget = SipConfig.DEFAULT_OUTBOUND_TARGET
     private var currentLocalIp = ""
 
     // ── Call tracking ───────────────────────────────────
@@ -124,6 +127,7 @@ class GatewayService : Service() {
             it != CallOrchestrator.BridgeState.IDLE
         } ?: false
         if (busy) return
+        if (initializing.get()) return
         val newIp = getLocalIp()
         if (newIp == "0.0.0.0") return
         val ipChanged = newIp != currentLocalIp
@@ -135,8 +139,17 @@ class GatewayService : Service() {
         }
     }
 
+    private fun isCallActive(): Boolean {
+        val state = orchestrator?.bridgeState ?: return false
+        return state != CallOrchestrator.BridgeState.IDLE
+    }
+
     private fun reconnect() {
         if (stopped || cfgServer.isEmpty()) return
+        if (isCallActive()) {
+            Log.i(TAG, "Reconnect skipped — call in progress")
+            return
+        }
         if (!initializing.compareAndSet(false, true)) {
             Log.i(TAG, "Reconnect skipped — already initializing")
             return
@@ -177,6 +190,7 @@ class GatewayService : Service() {
             ACTION_STOP -> stopGateway()
             ACTION_RELOAD_STATS -> reloadStats()
             ACTION_DIAL -> dialFromDialler(intent)
+            ACTION_RELAUNCH_FROM_FG -> startGateway(intent, forceRestart = true)
             else -> startGateway(intent)
         }
         return START_STICKY
@@ -197,13 +211,20 @@ class GatewayService : Service() {
         broadcastStatus(orchestrator?.bridgeState?.name ?: "IDLE", "Stats reloaded")
     }
 
-    private fun startGateway(intent: Intent?) {
+    private fun startGateway(intent: Intent?, forceRestart: Boolean = false) {
         // Guard: if the gateway is already running (SIP client exists and
         // we're not in stopped state), don't tear it down and restart.
         // This prevents redundant ACTION_START intents (e.g. from the
         // Activity opening, START_STICKY restart, or BootReceiver) from
         // killing an active SIP registration or call bridge.
-        if (!stopped && sipClient != null) {
+        //
+        // forceRestart is set by ACTION_RELAUNCH_FROM_FG, sent from
+        // MainActivity while the app is in the foreground. Restarting the
+        // FGS from a foreground launch makes the
+        // PROCESS_CAPABILITY_FOREGROUND_MICROPHONE bit stick for the FGS
+        // process lifetime, un-silencing AudioRecord(VOICE_CALL) in
+        // background operation (see docs/VOICE_CALL_SILENCING_INVESTIGATION.md).
+        if (!forceRestart && !stopped && sipClient != null) {
             Log.i(TAG, "startGateway: already running, skipping restart")
             // Broadcast current state so the Activity picks up the live status
             val state = orchestrator?.bridgeState ?: CallOrchestrator.BridgeState.IDLE
@@ -215,6 +236,18 @@ class GatewayService : Service() {
             }
             broadcastStatus(state.name, info)
             return
+        }
+
+        if (forceRestart && sipClient != null) {
+            Log.i(TAG, "startGateway: force restart from foreground (re-establishing mic capability)")
+        }
+
+        if (!forceRestart && intent?.getBooleanExtra(EXTRA_FROM_FOREGROUND, false) != true) {
+            MicCapabilityGuard.startMonitor(this) { isCallActive() }
+            if (MicCapabilityGuard.requestRelaunchIfNeeded(this, "service-start", inCall = isCallActive())) {
+                Log.i(TAG, "startGateway: deferred — foreground relaunch in progress")
+                return
+            }
         }
 
         // Clean up any existing client before starting a new one
@@ -233,12 +266,14 @@ class GatewayService : Service() {
         outgoingDurationSec = totals.outDurationSec
         currentCallStart = 0L
 
-        val prefs = getSharedPreferences("gateway", MODE_PRIVATE)
-        val server = intent?.getStringExtra(EXTRA_SERVER) ?: prefs.getString("server", "sip.callagent.pro") ?: ""
-        val port = intent?.getIntExtra(EXTRA_PORT, 5060) ?: prefs.getInt("port", 5060)
-        val username = intent?.getStringExtra(EXTRA_USER) ?: prefs.getString("user", "") ?: ""
-        val password = intent?.getStringExtra(EXTRA_PASS) ?: prefs.getString("pass", "") ?: ""
-        val localServer = intent?.getBooleanExtra(EXTRA_LOCAL_SERVER, prefs.getBoolean("local_server", false)) ?: prefs.getBoolean("local_server", false)
+        val prefs = SipConfig.openPrefs(this)
+        val resolved = SipConfig.resolve(prefs)
+        val server = intent?.getStringExtra(EXTRA_SERVER)?.takeIf { it.isNotBlank() } ?: resolved.server
+        val port = intent?.getIntExtra(EXTRA_PORT, -1)?.takeIf { it > 0 } ?: resolved.port
+        val username = intent?.getStringExtra(EXTRA_USER)?.takeIf { it.isNotBlank() } ?: resolved.user
+        val password = intent?.getStringExtra(EXTRA_PASS) ?: resolved.pass
+        val localServer = intent?.getBooleanExtra(EXTRA_LOCAL_SERVER, resolved.localServer)
+            ?: resolved.localServer
 
         if (server.isEmpty() || username.isEmpty()) {
             Log.e(TAG, "Missing SIP configuration")
@@ -250,11 +285,11 @@ class GatewayService : Service() {
 
         // Save for restart
         prefs.edit()
-            .putString("server", server)
-            .putInt("port", port)
-            .putString("user", username)
-            .putString("pass", password)
-            .putBoolean("local_server", localServer)
+            .putString(SipConfig.KEY_SERVER, server)
+            .putInt(SipConfig.KEY_PORT, port)
+            .putString(SipConfig.KEY_USER, username)
+            .putString(SipConfig.KEY_PASS, password)
+            .putBoolean(SipConfig.KEY_LOCAL_SERVER, localServer)
             .apply()
 
         cfgServer = server
@@ -262,6 +297,7 @@ class GatewayService : Service() {
         cfgUser = username
         cfgPass = password
         cfgLocalServer = localServer
+        cfgOutboundTarget = SipConfig.resolveOutboundTarget(prefs)
 
         notifStatusText = "Connecting"
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -331,7 +367,7 @@ class GatewayService : Service() {
         )
         sipClient = sip
 
-        val orch = CallOrchestrator(this, sip)
+        val orch = CallOrchestrator(this, sip, cfgOutboundTarget)
         orch.listener = object : CallOrchestrator.OrchestratorListener {
             override fun onStateChanged(state: CallOrchestrator.BridgeState, info: String) {
                 Log.i(TAG, "Bridge: $state - $info")
@@ -412,7 +448,14 @@ class GatewayService : Service() {
 
         sip.logListener = { msg -> broadcastLog("SIP: $msg") }
         GsmCallManager.logCallback = { msg -> broadcastLog("AUDIO: $msg") }
-        sip.onConnectionLost = { reconnect() }
+        sip.onConnectionLost = {
+            if (isCallActive()) {
+                Log.i(TAG, "SIP connection lost signal ignored — call in progress")
+                broadcastLog("SIP keepalive lost (ignored — call active)")
+            } else {
+                reconnect()
+            }
+        }
 
         try {
             sip.start()
@@ -676,11 +719,13 @@ class GatewayService : Service() {
         const val ACTION_STOP = "com.callagent.gateway.STOP"
         const val ACTION_RELOAD_STATS = "com.callagent.gateway.RELOAD_STATS"
         const val ACTION_DIAL = "com.callagent.gateway.DIAL"
+        const val ACTION_RELAUNCH_FROM_FG = "com.callagent.gateway.RELAUNCH_FROM_FG"
         const val EXTRA_SERVER = "server"
         const val EXTRA_PORT = "port"
         const val EXTRA_USER = "user"
         const val EXTRA_PASS = "pass"
         const val EXTRA_LOCAL_SERVER = "local_server"
+        const val EXTRA_FROM_FOREGROUND = "from_foreground"
         const val EXTRA_NUMBER = "number"
         const val STATUS_ACTION = "com.callagent.gateway.STATUS"
         const val LOG_ACTION = "com.callagent.gateway.LOG"
@@ -688,6 +733,25 @@ class GatewayService : Service() {
         fun start(context: Context, server: String, port: Int, user: String, pass: String, localServer: Boolean = false) {
             val intent = Intent(context, GatewayService::class.java).apply {
                 action = ACTION_START
+                putExtra(EXTRA_SERVER, server)
+                putExtra(EXTRA_PORT, port)
+                putExtra(EXTRA_USER, user)
+                putExtra(EXTRA_PASS, pass)
+                putExtra(EXTRA_LOCAL_SERVER, localServer)
+                putExtra(EXTRA_FROM_FOREGROUND, true)
+            }
+            context.startForegroundService(intent)
+        }
+
+        /**
+         * Force-restart the FGS from a foreground activity launch. Restarts the
+         * service process so the PROCESS_CAPABILITY_FOREGROUND_MICROPHONE bit
+         * sticks, un-silencing AudioRecord(VOICE_CALL) in background operation.
+         * Only call this when the app is in the foreground (e.g. MainActivity.onCreate).
+         */
+        fun relaunchFromForeground(context: Context, server: String, port: Int, user: String, pass: String, localServer: Boolean = false) {
+            val intent = Intent(context, GatewayService::class.java).apply {
+                action = ACTION_RELAUNCH_FROM_FG
                 putExtra(EXTRA_SERVER, server)
                 putExtra(EXTRA_PORT, port)
                 putExtra(EXTRA_USER, user)

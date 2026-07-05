@@ -42,6 +42,9 @@ class SipClient(
     @Volatile private var lastServerResponseTime = 0L
     @Volatile private var registrationLatch: CountDownLatch? = null
 
+    /** SignalWire Domain Apps authenticate by IP whitelist — REGISTER returns 404. */
+    private val ipAuthMode = password.isEmpty() && serverDomain.endsWith(".dapp.signalwire.com")
+
     private val activeCalls = ConcurrentHashMap<String, SipCall>()
     /** Single-thread executor for all socket sends — avoids NetworkOnMainThreadException */
     private var sendExecutor: ExecutorService? = null
@@ -81,7 +84,9 @@ class SipClient(
             catch (e: Exception) { uiLog("Monitor loop crashed: ${e.message}") }
         }, "SIP-Monitor").start()
         Thread({
-            try { register() }
+            try {
+                if (ipAuthMode) registerViaKeepalive() else register()
+            }
             catch (e: Exception) { uiLog("Register thread crashed: ${e.message}") }
         }, "SIP-Register").start()
     }
@@ -178,6 +183,12 @@ class SipClient(
     private fun handlePacket(data: String, address: Pair<String, Int>) {
         val msg = SipMessage.parse(data) ?: return
 
+        // Any SIP response from the server proves the path is alive — not just
+        // OPTIONS/REGISTER (INVITE 200 during a bridged call must count too).
+        if (msg.isResponse) {
+            lastServerResponseTime = System.currentTimeMillis()
+        }
+
         // OPTIONS keepalive from server
         if (msg.isRequest && msg.method == "OPTIONS") {
             val resp = SipBuilder.optionsResponse(msg, username, publicIp, localPort)
@@ -193,7 +204,7 @@ class SipClient(
 
         // OPTIONS response (for our keepalive) — update server liveness tracker
         if (msg.isResponse && msg.cseq?.contains("OPTIONS") == true) {
-            lastServerResponseTime = System.currentTimeMillis()
+            handleOptionsResponse(msg)
             return
         }
 
@@ -252,6 +263,39 @@ class SipClient(
 
     // ── Registration ────────────────────────────────────
 
+    /** IP-auth trunks (SignalWire Domain Apps) reject REGISTER — verify via OPTIONS instead. */
+    private fun registerViaKeepalive(): Boolean {
+        for (attempt in 1..3) {
+            if (!running.get()) return false
+            uiLog("OPTIONS keepalive attempt $attempt/3 (IP auth)")
+            registrationLatch = CountDownLatch(1)
+            sendOptions()
+            try {
+                registrationLatch?.await(10, TimeUnit.SECONDS)
+            } catch (_: InterruptedException) { /* stop requested */ }
+            if (registered) return true
+            if (!running.get()) return false
+            Thread.sleep(2000)
+        }
+        uiLog("IP-auth keepalive failed after 3 attempts")
+        listener?.onRegistrationFailed()
+        return false
+    }
+
+    private fun handleOptionsResponse(msg: SipMessage) {
+        lastServerResponseTime = System.currentTimeMillis()
+        if (msg.statusCode in 200..299 && !registered) {
+            registered = true
+            lastRegisterTime = lastServerResponseTime
+            uiLog("Connected to $serverDomain (IP auth)")
+            registrationLatch?.countDown()
+            listener?.onRegistered()
+        } else if (msg.statusCode !in 200..299 && ipAuthMode) {
+            uiLog("OPTIONS unexpected response: ${msg.statusCode}")
+            registrationLatch?.countDown()
+        }
+    }
+
     /**
      * Send REGISTER and wait for receiveLoop() to handle the response.
      * Uses a CountDownLatch so only receiveLoop() reads from the socket
@@ -283,6 +327,10 @@ class SipClient(
             callIdBase, cseq.getAndIncrement(),
             auth
         )
+        if (auth != null) {
+            Log.d(TAG, "REGISTER with auth header: ${auth.take(200)}")
+            Log.d(TAG, "REGISTER full packet: ${msg.take(500)}")
+        }
         sendTo(msg, serverAddress)
     }
 
@@ -298,12 +346,25 @@ class SipClient(
                 listener?.onRegistered()
                 true
             }
-            401, 407 -> {
-                uiLog("REGISTER ${msg.statusCode} challenge, sending auth")
+            401 -> {
+                uiLog("REGISTER 401 challenge, sending auth")
                 val authParams = SipAuth.parseChallenge(msg)
                 if (authParams != null) {
                     val uri = "sip:$serverDomain:$serverPort"
-                    val auth = SipAuth.buildAuthHeader("REGISTER", uri, username, password, authParams)
+                    val auth = SipAuth.buildAuthHeader("REGISTER", uri, username, password, authParams, isProxyAuth = false)
+                    sendRegister(auth)
+                } else {
+                    uiLog("Failed to parse auth challenge")
+                    registrationLatch?.countDown()
+                }
+                false
+            }
+            407 -> {
+                uiLog("REGISTER 407 challenge, sending auth")
+                val authParams = SipAuth.parseChallenge(msg)
+                if (authParams != null) {
+                    val uri = "sip:$serverDomain:$serverPort"
+                    val auth = SipAuth.buildAuthHeader("REGISTER", uri, username, password, authParams, isProxyAuth = true)
                     sendRegister(auth)
                 } else {
                     uiLog("Failed to parse auth challenge")
@@ -323,6 +384,14 @@ class SipClient(
 
     private fun handleIncomingInvite(msg: SipMessage, address: Pair<String, Int>) {
         val callId = msg.callId ?: return
+
+        // Duplicate INVITE for an active dialog — re-answer instead of creating a new call.
+        activeCalls[callId]?.let { existing ->
+            Log.i(TAG, "Duplicate INVITE for active call $callId — handing to dialog")
+            existing.handleMessage(msg)
+            return
+        }
+
         Log.i(TAG, "Incoming INVITE call-id=$callId from=${msg.callerNumber}")
 
         // Send 100 Trying
@@ -407,14 +476,14 @@ class SipClient(
     }
 
     /** Re-send INVITE with authentication */
-    fun resendInviteWithAuth(call: SipCall, authParams: SipAuth.AuthParams) {
+    fun resendInviteWithAuth(call: SipCall, authParams: SipAuth.AuthParams, isProxyAuth: Boolean = false) {
         val toHeader = call.toHeader ?: return
         // Extract target URI from To header
         val uriStart = toHeader.indexOf("sip:")
         val uriEnd = toHeader.indexOf('>', uriStart).let { if (it < 0) toHeader.length else it }
         val targetUri = if (uriStart >= 0) toHeader.substring(uriStart, uriEnd) else return
 
-        val auth = SipAuth.buildInviteAuthHeader(targetUri, username, password, authParams)
+        val auth = SipAuth.buildAuthHeader("INVITE", targetUri, username, password, authParams, isProxyAuth)
         val invite = SipBuilder.invite(
             targetUri, username, serverDomain,
             publicIp, localPort,
@@ -436,7 +505,7 @@ class SipClient(
 
     /** Consecutive keepalive failures (OPTIONS sent with no response) */
     @Volatile private var keepaliveFailures = 0
-    private val MAX_KEEPALIVE_FAILURES = 3
+    private val maxKeepaliveFailures = 3
 
     /** Called when the connection appears dead and needs a full reconnect */
     @Volatile var onConnectionLost: (() -> Unit)? = null
@@ -448,7 +517,7 @@ class SipClient(
             try {
                 if (!registered) {
                     uiLog("Not registered, attempting re-registration (backoff ${reregBackoff / 1000}s)")
-                    val ok = register()
+                    val ok = if (ipAuthMode) registerViaKeepalive() else register()
                     if (ok) {
                         reregBackoff = 10_000L
                         keepaliveFailures = 0
@@ -456,10 +525,13 @@ class SipClient(
                         // Exponential backoff: 10s, 20s, 40s, cap at 60s
                         Thread.sleep(reregBackoff)
                         reregBackoff = (reregBackoff * 2).coerceAtMost(60_000L)
-                        // After repeated failures, signal that we need a full reconnect
-                        if (reregBackoff >= 60_000L) {
+                        // After repeated failures, signal reconnect — but never while
+                        // an INVITE dialog is active (reconnect kills the bridge).
+                        if (reregBackoff >= 60_000L && activeCalls.isEmpty()) {
                             uiLog("Registration failed repeatedly, requesting reconnect")
                             onConnectionLost?.invoke()
+                        } else if (reregBackoff >= 60_000L) {
+                            uiLog("Registration failed but call active — deferring reconnect")
                         }
                         continue
                     }
@@ -468,13 +540,21 @@ class SipClient(
                     // to prevent NAT binding expiration on the SIP port
                     sendOptions()
                     Thread.sleep(5_000)
-                    // Check if we got any response from the server recently
-                    if (registered && System.currentTimeMillis() - lastServerResponseTime > 60_000) {
+                    // Active call traffic (INVITE 200, RTP) proves liveness — don't
+                    // tear down a bridged call because OPTIONS went unanswered.
+                    if (activeCalls.isNotEmpty()) {
+                        keepaliveFailures = 0
+                    } else if (registered && System.currentTimeMillis() - lastServerResponseTime > 60_000) {
                         keepaliveFailures++
-                        if (keepaliveFailures >= MAX_KEEPALIVE_FAILURES) {
-                            uiLog("Keepalive failed $keepaliveFailures times, connection lost")
-                            registered = false
-                            onConnectionLost?.invoke()
+                        if (keepaliveFailures >= maxKeepaliveFailures) {
+                            if (activeCalls.isNotEmpty()) {
+                                uiLog("Keepalive failed but call active — deferring reconnect")
+                                keepaliveFailures = 0
+                            } else {
+                                uiLog("Keepalive failed $keepaliveFailures times, connection lost")
+                                registered = false
+                                onConnectionLost?.invoke()
+                            }
                             continue
                         }
                     } else {
@@ -485,7 +565,7 @@ class SipClient(
                 if (registered && System.currentTimeMillis() - lastRegisterTime > 50 * 60 * 1000) {
                     uiLog("Periodic re-registration")
                     registered = false
-                    register()
+                    if (ipAuthMode) registerViaKeepalive() else register()
                 }
             } catch (e: Exception) {
                 uiLog("Monitor error: ${e.message}")
