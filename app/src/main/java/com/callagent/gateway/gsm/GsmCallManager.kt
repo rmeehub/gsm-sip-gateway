@@ -46,6 +46,38 @@ object GsmCallManager {
     /** Set when [batchMixerSetup] finishes; RtpSession waits past this before capture. */
     @Volatile var mixerSetupCompletedAtMs: Long = 0
 
+    private val keepAliveHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    @Volatile private var keepAliveDtmfSent = false
+
+    /**
+     * Twilio trial-account keep-alive.  A *trial* Twilio account tears the call
+     * down unless the answering party presses a key within ~7s of connect
+     * ("press any key to execute your code").  Send a couple of brief DTMF
+     * digits on the GSM leg (heard by the caller = Twilio) right after the call
+     * goes active so the call survives long enough to bridge.  Harmless for
+     * non-Twilio peers (a lone DTMF digit).  Remove/disable once off the Twilio
+     * trial account — see CLAUDE.md "8-second-key workaround".
+     */
+    private fun scheduleTwilioTrialKeepAliveDtmf() {
+        if (keepAliveDtmfSent) return
+        keepAliveDtmfSent = true
+        for (delayMs in longArrayOf(1500L, 3500L, 5500L)) {
+            keepAliveHandler.postDelayed({
+                val c = activeCall ?: return@postDelayed
+                if (c.state != Call.STATE_ACTIVE) return@postDelayed
+                try {
+                    appLog("Twilio keep-alive: DTMF '1' on GSM leg")
+                    c.playDtmfTone('1')
+                    keepAliveHandler.postDelayed({
+                        try { c.stopDtmfTone() } catch (_: Exception) {}
+                    }, 350L)
+                } catch (e: Exception) {
+                    Log.w(TAG, "keep-alive DTMF failed: ${e.message}")
+                }
+            }, delayMs)
+        }
+    }
+
     /** Log to both Android logcat AND the app log viewer. */
     private fun appLog(msg: String) {
         Log.i(TAG, msg)
@@ -96,6 +128,7 @@ object GsmCallManager {
             Call.STATE_ACTIVE -> {
                 Log.i(TAG, "GSM call active: $number")
                 configureAudioBridge()
+                scheduleTwilioTrialKeepAliveDtmf()
                 listener?.onGsmCallActive(call)
             }
         }
@@ -107,6 +140,7 @@ object GsmCallManager {
             activeCall = null
             activeCallState = Call.STATE_DISCONNECTED
         }
+        keepAliveDtmfSent = false
         restoreAudio()
         listener?.onGsmCallEnded(call)
     }
@@ -130,10 +164,12 @@ object GsmCallManager {
             Call.STATE_ACTIVE -> {
                 Log.i(TAG, "GSM call active")
                 configureAudioBridge()
+                scheduleTwilioTrialKeepAliveDtmf()
                 listener?.onGsmCallActive(call)
             }
             Call.STATE_DISCONNECTED -> {
                 Log.i(TAG, "GSM call disconnected")
+                keepAliveDtmfSent = false
                 listener?.onGsmCallEnded(call)
                 if (activeCall == call) {
                     activeCall = null
