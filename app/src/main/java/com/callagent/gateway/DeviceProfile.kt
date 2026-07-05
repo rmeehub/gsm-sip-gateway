@@ -1,6 +1,7 @@
 package com.callagent.gateway
 
 import android.media.AudioAttributes
+import android.media.MediaRecorder
 import android.os.Build
 import android.util.Log
 
@@ -516,20 +517,15 @@ data class DeviceProfile(
                     // Mute physical mic
                     append("tinymix 'Voice Call Mic Mute' 1 2>/dev/null; ")
                     append("tinymix 'Incall Mic Mute' 1 2>/dev/null; ")
-                    // Route modem audio into the incall capture ring buffer.
-                    // Without this the AOC DSP routes nothing into audio_incall_cap_0
-                    // and AudioRecord(VOICE_CALL) reads all-zero PCM.
-                    // ENUM values: Off / UL / DL / UL_DL / 3MIC.
-                    // NOTE (measured 2026-07-04): on this Pixel 7 over a VoLTE/IMS
-                    // call, NO value here yields caller audio — audio_incall_cap_0
-                    // reads all-zero under UL/DL/UL_DL, with mic muted or unmuted,
-                    // and with INCALL_RX Mixer IMSV on. `AoC Modem Sink Channel
-                    // Bitmap`=0 during the live call: the modem's call audio never
-                    // traverses the AOC DSP where this tap lives. Injection (EP6→
-                    // INCALL_TX) works, so the bridge is half-duplex on VoLTE.
-                    // This tap is expected to populate only on circuit-switched
-                    // calls; kept at UL_DL for that case. See CLAUDE.md.
-                    append("tinymix 'Incall Capture Stream0' UL_DL 2>/dev/null; ")
+                    // Caller capture uses AudioRecord(VOICE_DOWNLINK) via the
+                    // framework incall-record path (routing.captureSource) — NOT
+                    // the AOC 'Incall Capture Stream0' tap.  That tap was
+                    // measured (2026-07-04) to read all-zero on VoLTE under every
+                    // UL/DL/UL_DL value (AoC Modem Sink Channel Bitmap=0: the
+                    // modem's VoLTE audio never reaches the AOC DSP), so it is no
+                    // longer set here.  A BCR control test proved VOICE_DOWNLINK
+                    // captures the far-end cleanly on this device over VoLTE with
+                    // the injection routing below active.  See CLAUDE.md.
                     // Enable INCALL playback stream (opens modem TX path)
                     append("tinymix 'Incall Playback Stream0' 1 2>/dev/null; ")
                     // Route EP6 TX to INCALL_TX (EP6 = deep-buffer-playback from mixer_paths.xml)
@@ -572,7 +568,10 @@ data class DeviceProfile(
                 // OpenAI to one ear only).
                 requireSpeakerMode = false,
                 incallMusicParam = "incall_music_enabled",
-                voiceDownlinkWorks = false,
+                // VOICE_DOWNLINK is the caller-capture source on this device
+                // (framework incall-record path); proven on VoLTE 2026-07-04.
+                voiceDownlinkWorks = true,
+                captureSource = MediaRecorder.AudioSource.VOICE_DOWNLINK,
                 routeChangeDelayMs = 500,
                 appopsPropagationMs = 500,
                 playbackToTelephony = true,
@@ -749,6 +748,23 @@ data class HalRoutingProfile(
 
     /** Whether VOICE_DOWNLINK returns real audio on this device. */
     val voiceDownlinkWorks: Boolean,
+
+    /** AudioRecord source for capturing the caller (modem RX / downlink) that
+     *  is forwarded to the SIP side.
+     *
+     *  Default VOICE_CALL = uplink+downlink mixed by the HAL.  On devices where
+     *  it works this is fine, but it also captures our own injected SIP audio
+     *  (potential echo) and, on Pixel/Tensor VoLTE, reads all-zero because the
+     *  framework's incall-record route isn't the AOC capture tap the mixer
+     *  setup was pointing at.
+     *
+     *  VOICE_DOWNLINK = caller-only, via the standard AudioFlinger incall-record
+     *  path (no ALSA/AOC tap needed).  Verified 2026-07-04 on Pixel 7 / Android
+     *  16 over a live VoLTE call: downlink RMS ≈ −14.7 dB (clean far-end speech)
+     *  with the injection mixer routing active — see CLAUDE.md and the BCR
+     *  control test.  Caller-only capture also means the injected SIP leg cannot
+     *  echo back into the uplink. */
+    val captureSource: Int = MediaRecorder.AudioSource.VOICE_CALL,
 
     /** HAL parameter name for incall_music (set via AudioManager.setParameters). */
     val incallMusicParam: String,

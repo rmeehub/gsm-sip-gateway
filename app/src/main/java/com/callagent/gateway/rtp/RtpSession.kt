@@ -103,6 +103,31 @@ class RtpSession(
 
     @Volatile private var currentSourceId: Int = -1
     private data class SourceConfig(val source: Int, val name: String, val rate: Int)
+
+    /**
+     * Capture configs for the profile's [captureSource] (VOICE_CALL by default,
+     * VOICE_DOWNLINK on Pixel/Tensor).  For wideband codecs (G.722) 16 kHz is
+     * tried before 8 kHz — that is sample-rate negotiation, NOT a source
+     * fallback; the source itself never changes.
+     */
+    private fun buildCaptureConfigs(): List<SourceConfig> {
+        val source = profile.routing.captureSource
+        val name = when (source) {
+            MediaRecorder.AudioSource.VOICE_DOWNLINK -> "VOICE_DOWNLINK"
+            MediaRecorder.AudioSource.VOICE_UPLINK -> "VOICE_UPLINK"
+            MediaRecorder.AudioSource.VOICE_CALL -> "VOICE_CALL"
+            else -> "SRC$source"
+        }
+        val wideband = payloadType != RtpPacket.PT_PCMA && payloadType != RtpPacket.PT_PCMU
+        return if (wideband) {
+            listOf(
+                SourceConfig(source, "$name@16k", 16000),
+                SourceConfig(source, name, 8000)
+            )
+        } else {
+            listOf(SourceConfig(source, name, 8000))
+        }
+    }
     // Silence detection — only counted during non-echo periods.  On Pixel/Tensor
     // (playbackToTelephony) VOICE_CALL reads near-zero during quiet GSM pauses.
     private val silenceRmsThreshold = 3
@@ -163,7 +188,8 @@ class RtpSession(
     /**
      * Initialize AudioRecord and AudioTrack.
      *
-     * AudioRecord: VOICE_CALL captures uplink+downlink mixed digitally.
+     * AudioRecord: profile.routing.captureSource (VOICE_CALL = uplink+downlink
+     * mixed; VOICE_DOWNLINK = caller-only, used on Pixel/Tensor).
      * AudioTrack: USAGE_MEDIA (STREAM_MUSIC) so that Qualcomm's
      * incall_music_enabled=true parameter injects it into voice TX (uplink).
      * USAGE_VOICE_COMMUNICATION maps to STREAM_VOICE_CALL which the HAL
@@ -176,17 +202,10 @@ class RtpSession(
             else -> 16000  // G.722
         }
 
-        // Single configured source: VOICE_CALL (uplink+downlink mixed digitally).
-        // The 8kHz/16kHz variants are sample-rate negotiation, NOT a fallback.
-        val wideband = payloadType != RtpPacket.PT_PCMA && payloadType != RtpPacket.PT_PCMU
-        val configs = if (wideband) {
-            listOf(
-                SourceConfig(MediaRecorder.AudioSource.VOICE_CALL, "VOICE_CALL@16k", 16000),
-                SourceConfig(MediaRecorder.AudioSource.VOICE_CALL, "VOICE_CALL", 8000)
-            )
-        } else {
-            listOf(SourceConfig(MediaRecorder.AudioSource.VOICE_CALL, "VOICE_CALL", 8000))
-        }
+        // Capture source comes from the device profile (VOICE_CALL by default,
+        // VOICE_DOWNLINK on Pixel/Tensor).  The 8kHz/16kHz variants are
+        // sample-rate negotiation, NOT a source fallback.
+        val configs = buildCaptureConfigs()
 
         // Single attempt here.  Cold-boot HAL init latency is handled by the
         // bounded retry in captureInitAndLoop() — this method must not fall
@@ -331,7 +350,7 @@ class RtpSession(
      * so the caller hears the agent right away, even if the reverse
      * direction (GSM→SIP) takes longer to come up.
      *
-     * NO fallback: if the configured VOICE_CALL source can't be initialized
+     * NO fallback: if the configured capture source can't be initialized
      * or produces silence, the call is failed via [Listener.onRtpError] so
      * the orchestrator tears it down.
      */
@@ -346,15 +365,7 @@ class RtpSession(
         // Cold boot: AudioRecord couldn't initialize in initAudio().  Retry the
         // SAME source with delays — cold-boot HAL init latency is real.  This is
         // retry, NOT a fallback: the configured source never changes.
-        val wideband = payloadType != RtpPacket.PT_PCMA && payloadType != RtpPacket.PT_PCMU
-        val configs = if (wideband) {
-            listOf(
-                SourceConfig(MediaRecorder.AudioSource.VOICE_CALL, "VOICE_CALL@16k", 16000),
-                SourceConfig(MediaRecorder.AudioSource.VOICE_CALL, "VOICE_CALL", 8000)
-            )
-        } else {
-            listOf(SourceConfig(MediaRecorder.AudioSource.VOICE_CALL, "VOICE_CALL", 8000))
-        }
+        val configs = buildCaptureConfigs()
 
         val maxRetries = 15  // ~30s of cold-boot HAL init latency
         for (attempt in 1..maxRetries) {
