@@ -52,30 +52,29 @@ object GsmCallManager {
     /**
      * Twilio trial-account keep-alive.  A *trial* Twilio account tears the call
      * down unless the answering party presses a key within ~7s of connect
-     * ("press any key to execute your code").  Send a couple of brief DTMF
-     * digits on the GSM leg (heard by the caller = Twilio) right after the call
-     * goes active so the call survives long enough to bridge.  Harmless for
-     * non-Twilio peers (a lone DTMF digit).  Remove/disable once off the Twilio
-     * trial account — see CLAUDE.md "8-second-key workaround".
+     * ("press any key to execute your code").  A SINGLE keypress is enough —
+     * Twilio starts executing the call flow immediately after the first key —
+     * so send one brief DTMF '1' on the GSM leg (heard by the caller = Twilio)
+     * shortly after the call goes active.  Sending more would just inject stray
+     * DTMF into the already-running flow.  Harmless for non-Twilio peers.
+     * Remove/disable once off the Twilio trial account — CLAUDE.md "8-second-key".
      */
     private fun scheduleTwilioTrialKeepAliveDtmf() {
         if (keepAliveDtmfSent) return
         keepAliveDtmfSent = true
-        for (delayMs in longArrayOf(1500L, 3500L, 5500L)) {
-            keepAliveHandler.postDelayed({
-                val c = activeCall ?: return@postDelayed
-                if (c.state != Call.STATE_ACTIVE) return@postDelayed
-                try {
-                    appLog("Twilio keep-alive: DTMF '1' on GSM leg")
-                    c.playDtmfTone('1')
-                    keepAliveHandler.postDelayed({
-                        try { c.stopDtmfTone() } catch (_: Exception) {}
-                    }, 350L)
-                } catch (e: Exception) {
-                    Log.w(TAG, "keep-alive DTMF failed: ${e.message}")
-                }
-            }, delayMs)
-        }
+        keepAliveHandler.postDelayed({
+            val c = activeCall ?: return@postDelayed
+            if (c.state != Call.STATE_ACTIVE) return@postDelayed
+            try {
+                appLog("Twilio keep-alive: DTMF '1' on GSM leg")
+                c.playDtmfTone('1')
+                keepAliveHandler.postDelayed({
+                    try { c.stopDtmfTone() } catch (_: Exception) {}
+                }, 350L)
+            } catch (e: Exception) {
+                Log.w(TAG, "keep-alive DTMF failed: ${e.message}")
+            }
+        }, 1500L)
     }
 
     /** Log to both Android logcat AND the app log viewer. */

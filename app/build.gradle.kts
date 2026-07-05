@@ -29,6 +29,15 @@ android {
         buildConfigField("String", "DEFAULT_SIP_SERVER", "\"loomli-gsm-gateway.dapp.signalwire.com\"")
         buildConfigField("String", "DEFAULT_SIP_USER", "\"gateway\"")
         buildConfigField("int", "DEFAULT_SIP_PORT", "5060")
+
+        // OpenAI Realtime WebSocket-direct transport (alternative to SIP/RTP).
+        // When enabled, a bridged GSM call opens wss://api.openai.com/v1/realtime
+        // directly, authed by an ephemeral token minted at DEFAULT_REALTIME_TOKEN_URL
+        // (the bridge-worker /token endpoint). Empty URL = feature off.
+        buildConfigField("boolean", "DEFAULT_REALTIME_ENABLED", "false")
+        buildConfigField("String", "DEFAULT_REALTIME_TOKEN_URL", "\"\"")
+        buildConfigField("String", "DEFAULT_REALTIME_MODEL", "\"gpt-realtime\"")
+        buildConfigField("String", "DEFAULT_REALTIME_VOICE", "\"marin\"")
     }
 
     signingConfigs {
@@ -74,6 +83,11 @@ dependencies {
 
     // Encrypted credentials at rest, backed by Android Keystore.
     implementation("androidx.security:security-crypto:1.1.0-alpha06")
+
+    // WebSocket + HTTP client for the OpenAI Realtime direct transport
+    // (ephemeral-token mint + wss://api.openai.com/v1/realtime). JSON via
+    // Android's built-in org.json; Base64 via android.util.Base64 — no other deps.
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
 
     testImplementation("junit:junit:4.13.2")
 }

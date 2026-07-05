@@ -26,6 +26,16 @@ SIP_PASS="${SIP_PASS:-}"
 SIP_LOCAL_SERVER="${SIP_LOCAL_SERVER:-false}"
 SIP_AUTOCONNECT="${SIP_AUTOCONNECT:-true}"
 
+# OpenAI Realtime WebSocket-direct transport (alternative to SIP/RTP). When
+# REALTIME_ENABLED=true and a token URL is set, inbound GSM calls bridge
+# straight to OpenAI Realtime over a WebSocket instead of placing a SIP call.
+#   REALTIME_ENABLED=true REALTIME_TOKEN_URL=https://<worker>/token \
+#     ./scripts/configure-sip.sh --force
+REALTIME_ENABLED="${REALTIME_ENABLED:-false}"
+REALTIME_TOKEN_URL="${REALTIME_TOKEN_URL:-}"
+REALTIME_MODEL="${REALTIME_MODEL:-gpt-realtime}"
+REALTIME_VOICE="${REALTIME_VOICE:-marin}"
+
 FORCE=false
 ADB_SERIAL=""
 
@@ -88,6 +98,8 @@ local_server_bool="false"
 [ "$SIP_LOCAL_SERVER" = "true" ] && local_server_bool="true"
 autoconnect_bool="true"
 [ "$SIP_AUTOCONNECT" = "false" ] && autoconnect_bool="false"
+realtime_bool="false"
+[ "$REALTIME_ENABLED" = "true" ] && realtime_bool="true"
 
 host_tmp=$(mktemp)
 trap 'rm -f "$host_tmp"' EXIT
@@ -101,6 +113,10 @@ cat > "$host_tmp" <<EOF
     <string name="pass">${SIP_PASS}</string>
     <boolean name="local_server" value="${local_server_bool}" />
     <boolean name="autoconnect" value="${autoconnect_bool}" />
+    <boolean name="realtime_enabled" value="${realtime_bool}" />
+    <string name="realtime_token_url">${REALTIME_TOKEN_URL}</string>
+    <string name="realtime_model">${REALTIME_MODEL}</string>
+    <string name="realtime_voice">${REALTIME_VOICE}</string>
 </map>
 EOF
 
@@ -115,3 +131,8 @@ fi
 su_cmd "rm -f '$DEVICE_TMP'" 2>/dev/null || true
 
 ok "SIP prefs written: ${SIP_USER}@${SIP_SERVER}:${SIP_PORT} (autoconnect=${autoconnect_bool})"
+if [ "$realtime_bool" = "true" ]; then
+    ok "Realtime WS mode ENABLED: ${REALTIME_MODEL}/${REALTIME_VOICE} via ${REALTIME_TOKEN_URL}"
+else
+    ok "Realtime WS mode: off (SIP/RTP path)"
+fi

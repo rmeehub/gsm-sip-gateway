@@ -46,8 +46,15 @@ class RtpSession(
     private val localPort: Int,
     private val remoteAddr: String,
     private val remotePort: Int,
-    private val payloadType: Int = RtpPacket.PT_PCMA
+    private val payloadType: Int = RtpPacket.PT_PCMA,
+    // Optional pluggable wire. null → UDP/RTP to a SIP peer (default). Non-null
+    // → the transport replaces the UDP wire (e.g. OpenAI Realtime WebSocket):
+    // socket/receiveLoop/NAT-punch/DTMF are skipped, while capture-gating,
+    // jitter buffer, codec and injection paths stay unchanged.
+    private val transport: MediaTransport? = null
 ) {
+    private val wsMode: Boolean get() = transport != null
+
     private val running = AtomicBoolean(false)
     private var socket: DatagramSocket? = null
     private var audioRecord: AudioRecord? = null
@@ -62,6 +69,16 @@ class RtpSession(
     private var txTimestamp = 0L
     private val txSsrc = (Math.random() * 0xFFFFFFFFL).toLong()
 
+    // Twilio trial-account keep-alive on the SIP leg.  A *trial* Twilio account
+    // (our test rig: gateway → safwatly.sip.twilio.com → OpenAI) plays a "press
+    // any key to execute your code" prompt on this outbound leg and tears it
+    // down (BYE ~8s) unless a key is pressed.  Send one RFC2833 telephone-event
+    // DTMF (PT 101, offered in our SDP) from the TX thread shortly after audio
+    // starts.  Mirrors the GSM-leg DTMF in GsmCallManager; both legs need it on
+    // a trial account.  Remove/gate once off the Twilio trial account.
+    private var sipDtmfKeepAliveSent = false
+    private val dtmfPayloadType = 101
+
     // Symmetric RTP: latch onto the actual source address of received packets
     @Volatile private var latchedAddr: InetAddress? = null
     @Volatile private var latchedPort: Int = 0
@@ -72,7 +89,12 @@ class RtpSession(
     // bridge that already has 100-200ms of inherent GSM latency.
     // Previous capacity=3 was too aggressive: any slight jitter caused
     // packet drops and choppy audio.
-    private val jitterBuffer = ArrayBlockingQueue<ByteArray>(8)
+    //
+    // WS transport mode uses a much larger buffer (≈10s): OpenAI streams a whole
+    // response faster than real time in a burst, and the playback loop paces it
+    // out at 20ms/frame. The drain-excess logic is disabled in WS mode so the
+    // burst isn't discarded (see playbackLoop).
+    private val jitterBuffer = ArrayBlockingQueue<ByteArray>(if (transport != null) 500 else 8)
 
     // RTP inactivity tracking
     @Volatile private var lastRtpReceivedTime = 0L
@@ -145,20 +167,23 @@ class RtpSession(
 
     fun start() {
         if (running.getAndSet(true)) return
-        Log.i(TAG, "Starting RTP session: local=$localPort remote=$remoteAddr:$remotePort pt=$payloadType")
+        Log.i(TAG, "Starting RTP session: local=$localPort remote=$remoteAddr:$remotePort pt=$payloadType wsMode=$wsMode")
 
-        try {
-            socket = DatagramSocket(null).apply {
-                reuseAddress = true
-                bind(InetSocketAddress(localPort))
-                soTimeout = 100
-                receiveBufferSize = 262144
+        // UDP wire only in SIP/RTP mode. WS transport mode has no local socket.
+        if (!wsMode) {
+            try {
+                socket = DatagramSocket(null).apply {
+                    reuseAddress = true
+                    bind(InetSocketAddress(localPort))
+                    soTimeout = 100
+                    receiveBufferSize = 262144
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to bind RTP socket on port $localPort: ${e.message}")
+                running.set(false)
+                listener?.onRtpError("Socket bind failed: ${e.message}")
+                return
             }
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to bind RTP socket on port $localPort: ${e.message}")
-            running.set(false)
-            listener?.onRtpError("Socket bind failed: ${e.message}")
-            return
         }
 
         if (!initAudio()) {
@@ -166,18 +191,25 @@ class RtpSession(
             return
         }
 
-        // Send initial RTP keepalive to punch NAT pinhole before audio starts
-        try {
-            val remoteInet = InetAddress.getByName(remoteAddr)
-            val silence = RtpPacket(payloadType, 0, 0, txSsrc, ByteArray(160)).encode()
-            socket?.send(DatagramPacket(silence, silence.size, remoteInet, remotePort))
-            Log.i(TAG, "Sent NAT punch-through packet to $remoteAddr:$remotePort")
-        } catch (e: Exception) {
-            Log.w(TAG, "NAT punch-through failed: ${e.message}")
+        if (wsMode) {
+            // Open the transport (e.g. OpenAI Realtime WS). Inbound agent audio
+            // arrives via the sink and feeds the same jitter buffer the UDP path
+            // would have filled.
+            transport?.start(transportSink)
+        } else {
+            // Send initial RTP keepalive to punch NAT pinhole before audio starts
+            try {
+                val remoteInet = InetAddress.getByName(remoteAddr)
+                val silence = RtpPacket(payloadType, 0, 0, txSsrc, ByteArray(160)).encode()
+                socket?.send(DatagramPacket(silence, silence.size, remoteInet, remotePort))
+                Log.i(TAG, "Sent NAT punch-through packet to $remoteAddr:$remotePort")
+            } catch (e: Exception) {
+                Log.w(TAG, "NAT punch-through failed: ${e.message}")
+            }
         }
 
         lastRtpReceivedTime = System.currentTimeMillis()
-        Thread({ receiveLoop() }, "RTP-Recv-$localPort").start()
+        if (!wsMode) Thread({ receiveLoop() }, "RTP-Recv-$localPort").start()
         Thread({ playbackLoop() }, "RTP-Play-$localPort").start()
         Thread({ captureInitAndLoop() }, "RTP-Capt-$localPort").start()
         Thread({ timeoutLoop() }, "RTP-Timeout-$localPort").start()
@@ -441,11 +473,54 @@ class RtpSession(
         }
         audioTrack = null
 
+        try { transport?.stop() } catch (_: Exception) {}
+
         socket?.close()
         socket = null
         jitterBuffer.clear()
 
         listener?.onRtpStopped()
+    }
+
+    /**
+     * Sink for [MediaTransport] (WS mode): inbound agent audio (8 kHz μ-law) is
+     * split into 20ms (160-byte) frames and queued into the same jitter buffer
+     * the UDP receive loop would fill, so the unchanged playback/injection path
+     * pumps it into the GSM uplink. A barge-in flush drops queued agent audio.
+     */
+    private val transportSink = object : MediaTransport.Sink {
+        override fun onAudio(mulaw: ByteArray) {
+            lastRtpReceivedTime = System.currentTimeMillis()
+            var off = 0
+            while (off < mulaw.size) {
+                val end = minOf(off + 160, mulaw.size)
+                val frame = mulaw.copyOfRange(off, end)
+                off = end
+                rxPacketCount++
+                if (!jitterBuffer.offer(frame)) {
+                    jitterBuffer.poll()   // drop oldest under sustained backlog
+                    jitterBuffer.offer(frame)
+                }
+            }
+        }
+
+        override fun onFlushPlayback() {
+            // Caller barged in — discard queued agent audio so we stop talking.
+            jitterBuffer.clear()
+        }
+
+        override fun onStatus(msg: String) {
+            Log.i(TAG, "transport: $msg")
+            listener?.onRtpStats(msg)
+        }
+
+        override fun onError(msg: String) {
+            Log.e(TAG, "transport error: $msg")
+            listener?.onRtpStats("transport error: $msg")
+            // Audio path is dead — tear the bridge down promptly (same path the
+            // RTP inactivity timeout uses) rather than waiting out the timeout.
+            listener?.onRtpTimeout()
+        }
     }
 
     // ── Capture: VOICE_CALL → echo gate → gain → encode → RTP send ──
@@ -531,7 +606,9 @@ class RtpSession(
         // Buffer: 20ms of PCM at the actual capture sample rate
         val samplesPerFrame = captureRate / 50  // 160 @ 8kHz, 320 @ 16kHz
         val pcmBuf = ByteArray(samplesPerFrame * 2)
-        val defaultRemoteInet = InetAddress.getByName(remoteAddr)
+        // No UDP destination in WS mode ("openai-ws" is not resolvable); the
+        // transport owns the wire, so only resolve the RTP peer for the UDP path.
+        val defaultRemoteInet = if (wsMode) null else InetAddress.getByName(remoteAddr)
         var silenceFrameCount = 0
 
         while (running.get()) {
@@ -556,7 +633,10 @@ class RtpSession(
                 // NO fallback: when the limit is hit, stop and return false so
                 // captureInitAndLoop() fails the call.  The caller never tries
                 // an alternative source.
-                val noEchoPeriod = decayingPlaybackRms <= echoGateThreshold
+                // In WS mode caller silence is NORMAL — the caller is listening
+                // to the agent, so an all-quiet downlink must NOT fail the call.
+                // The dead-source guard only applies to the SIP/RTP path.
+                val noEchoPeriod = !wsMode && decayingPlaybackRms <= echoGateThreshold
                 if (noEchoPeriod) {
                     if (rawCaptureRms < silenceRmsThreshold) {
                         silenceFrameCount++
@@ -685,21 +765,58 @@ class RtpSession(
                     if (txPacketCount == 0L) firstTxInfo = "capRMS=$captureRms enc=$hexHead"
                 }
 
-                val destAddr = latchedAddr ?: defaultRemoteInet
-                val destPort = if (latchedAddr != null) latchedPort else remotePort
+                if (wsMode) {
+                    // WS transport: caller audio (μ-law) goes up as
+                    // input_audio_buffer.append. No RTP header, no DTMF keep-alive.
+                    transport?.sendAudio(encoded)
+                    txPacketCount++
+                } else {
+                    val destAddr = latchedAddr ?: defaultRemoteInet!!
+                    val destPort = if (latchedAddr != null) latchedPort else remotePort
 
-                val packet = RtpPacket(payloadType, txSequence, txTimestamp, txSsrc, encoded)
-                val data = packet.encode()
-                socket?.send(DatagramPacket(data, data.size, destAddr, destPort))
+                    val packet = RtpPacket(payloadType, txSequence, txTimestamp, txSsrc, encoded)
+                    val data = packet.encode()
+                    socket?.send(DatagramPacket(data, data.size, destAddr, destPort))
 
-                txSequence = (txSequence + 1) and 0xFFFF
-                txPacketCount++
-                txTimestamp += 160 // 20ms at 8000Hz RTP clock
+                    txSequence = (txSequence + 1) and 0xFFFF
+                    txPacketCount++
+                    txTimestamp += 160 // 20ms at 8000Hz RTP clock
+
+                    // Twilio trial keep-alive: press a "key" on the SIP leg ~1.5s in.
+                    if (!sipDtmfKeepAliveSent && txPacketCount >= 75L) {
+                        sipDtmfKeepAliveSent = true
+                        sendDtmfOnSipLeg('1', destAddr, destPort)
+                    }
+                }
             } catch (e: Exception) {
                 if (running.get()) Log.e(TAG, "Capture error: ${e.message}")
             }
         }
         return true  // Normal exit (call ended)
+    }
+
+    /**
+     * Send one DTMF digit on the SIP leg as an RFC 4733 telephone-event burst
+     * (PT [dtmfPayloadType], 3 packets, marker on the first, shared timestamp).
+     * Called from the TX (capture) thread so it shares tx sequence/timestamp/
+     * socket state with the audio sender — no cross-thread races.
+     */
+    private fun sendDtmfOnSipLeg(digit: Char, destAddr: InetAddress, destPort: Int) {
+        try {
+            val seq = com.callagent.gateway.sip.DtmfEvent.sequenceFor(digit)
+            val eventTs = txTimestamp
+            seq.packets.forEachIndexed { i, ev ->
+                val pkt = RtpPacket(dtmfPayloadType, txSequence, eventTs, txSsrc, ev.encode(), marker = (i == 0))
+                val d = pkt.encode()
+                socket?.send(DatagramPacket(d, d.size, destAddr, destPort))
+                txSequence = (txSequence + 1) and 0xFFFF
+            }
+            txTimestamp += 1600 // 200ms telephone-event @ 8kHz
+            Log.i(TAG, "Sent RFC2833 DTMF '$digit' on SIP leg (Twilio trial keep-alive)")
+            listener?.onRtpStats("SIP DTMF '$digit' sent (Twilio trial keep-alive)")
+        } catch (e: Exception) {
+            Log.w(TAG, "SIP DTMF send failed: ${e.message}")
+        }
     }
 
     // ── Receive: RTP recv → jitter buffer ───────────────
@@ -809,11 +926,18 @@ class RtpSession(
                 Log.d(TAG, stats) // Keep detailed stats in debug log
 
 
-                val elapsed = System.currentTimeMillis() - lastRtpReceivedTime
-                if (elapsed > rtpTimeoutMs) {
-                    Log.w(TAG, "RTP timeout: no packets received for ${elapsed / 1000}s")
-                    listener?.onRtpTimeout()
-                    break
+                // The inactivity timeout is UDP-only. In WS mode there is no
+                // steady packet stream — the agent is silent during natural
+                // conversational pauses — so this would false-fire. WS liveness
+                // is covered by the socket's own onFailure/onClosed → onError,
+                // and by GSM call-state teardown.
+                if (!wsMode) {
+                    val elapsed = System.currentTimeMillis() - lastRtpReceivedTime
+                    if (elapsed > rtpTimeoutMs) {
+                        Log.w(TAG, "RTP timeout: no packets received for ${elapsed / 1000}s")
+                        listener?.onRtpTimeout()
+                        break
+                    }
                 }
             } catch (_: InterruptedException) {
                 break
@@ -861,7 +985,13 @@ class RtpSession(
                 // Keep at most 5 (100ms) — enough headroom to absorb
                 // jitter without audible gaps.  100ms is still well within
                 // the GSM bridge's inherent latency budget.
-                while (jitterBuffer.size > 5) {
+                //
+                // Disabled in WS mode: OpenAI delivers a whole response as a
+                // fast burst that legitimately fills the (large) buffer, and it
+                // is paced back out one 20ms frame per poll. Draining here would
+                // throw away most of the agent's reply. Barge-in is handled by
+                // onFlushPlayback() clearing the buffer instead.
+                while (!wsMode && jitterBuffer.size > 5) {
                     jitterBuffer.poll()
                 }
 

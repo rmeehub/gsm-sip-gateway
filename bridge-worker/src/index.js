@@ -27,6 +27,49 @@ const worker = {
       return new Response("ok\n", { status: 200 });
     }
 
+    // Ephemeral Realtime token minter for the WebSocket-direct transport.
+    // The gateway (an untrusted client — we don't put the real key on the
+    // device) POSTs here to get a short-lived `ek_...` client secret, then
+    // opens wss://api.openai.com/v1/realtime with it. The standard API key
+    // never leaves this Worker. Tokens expire ~60s after mint, so the device
+    // fetches one per call, right before connecting.
+    //
+    //   POST /token            → { value, expires_at, model }
+    //   GET  /token            → same (convenience for curl checks)
+    if (url.pathname === "/token" && (request.method === "POST" || request.method === "GET")) {
+      if (!env.OPENAI_API_KEY) {
+        return new Response("OPENAI_API_KEY not configured", { status: 500 });
+      }
+      const model = env.REALTIME_MODEL || "gpt-realtime";
+      const mintResp = await fetch("https://api.openai.com/v1/realtime/client_secrets", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${env.OPENAI_API_KEY.trim()}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ session: { type: "realtime", model } }),
+      });
+      const text = await mintResp.text();
+      if (!mintResp.ok) {
+        console.error(`Token mint failed ${mintResp.status}: ${text.slice(0, 300)}`);
+        return new Response(`mint failed ${mintResp.status}`, { status: 502 });
+      }
+      let value, expiresAt;
+      try {
+        const j = JSON.parse(text);
+        value = j.value || j.client_secret?.value;
+        expiresAt = j.expires_at;
+      } catch {
+        return new Response("mint parse failed", { status: 502 });
+      }
+      if (!value) return new Response("no token in mint response", { status: 502 });
+      console.log(`Minted ephemeral token exp=${expiresAt} model=${model}`);
+      return new Response(JSON.stringify({ value, expires_at: expiresAt, model }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
     if (request.method === "GET" && url.pathname === "/last-call-id") {
       if (!lastCallId) {
         return new Response("no call yet\n", { status: 404 });
@@ -348,9 +391,10 @@ const worker = {
       return new Response("Accept failed", { status: 502 });
     }
 
+    const acceptRespBody = await acceptResp.text().catch(() => "");
     lastCallId = callId;
     lastCallAcceptedAt = Date.now();
-    console.log(`Accepted call_id=${callId}; attaching sideband monitor`);
+    console.log(`Accepted call_id=${callId} status=${acceptResp.status} body=${acceptRespBody.slice(0, 600)}; attaching sideband monitor`);
     ctx.waitUntil(notifySidebandMonitor(callId, env));
 
     return new Response("", { status: 200 });

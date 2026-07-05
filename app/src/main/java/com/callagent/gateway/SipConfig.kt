@@ -19,6 +19,12 @@ object SipConfig {
     const val KEY_AUTOCONNECT = "autoconnect"
     const val KEY_OUTBOUND_TARGET = "outbound_target"
 
+    // OpenAI Realtime WebSocket-direct transport (alternative to SIP/RTP).
+    const val KEY_REALTIME_ENABLED = "realtime_enabled"
+    const val KEY_REALTIME_TOKEN_URL = "realtime_token_url"
+    const val KEY_REALTIME_MODEL = "realtime_model"
+    const val KEY_REALTIME_VOICE = "realtime_voice"
+
     val defaultServer: String get() = BuildConfig.DEFAULT_SIP_SERVER
     val defaultUser: String get() = BuildConfig.DEFAULT_SIP_USER
     val defaultPort: Int get() = BuildConfig.DEFAULT_SIP_PORT
@@ -26,6 +32,10 @@ object SipConfig {
     const val DEFAULT_LOCAL_SERVER = false
     const val DEFAULT_AUTOCONNECT = true
     const val DEFAULT_OUTBOUND_TARGET = "+12015029074"
+    val defaultRealtimeEnabled: Boolean get() = BuildConfig.DEFAULT_REALTIME_ENABLED
+    val defaultRealtimeTokenUrl: String get() = BuildConfig.DEFAULT_REALTIME_TOKEN_URL
+    val defaultRealtimeModel: String get() = BuildConfig.DEFAULT_REALTIME_MODEL
+    val defaultRealtimeVoice: String get() = BuildConfig.DEFAULT_REALTIME_VOICE
 
     fun openPrefs(context: Context): SharedPreferences =
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -59,6 +69,26 @@ object SipConfig {
     fun resolveOutboundTarget(prefs: SharedPreferences): String =
         prefs.getString(KEY_OUTBOUND_TARGET, null)?.takeIf { it.isNotBlank() } ?: DEFAULT_OUTBOUND_TARGET
 
+    // Realtime WS mode is active only when explicitly enabled AND a token URL is
+    // configured (the bridge-worker /token endpoint) — an empty URL means off.
+    fun resolveRealtimeTokenUrl(prefs: SharedPreferences): String =
+        prefs.getString(KEY_REALTIME_TOKEN_URL, null)?.takeIf { it.isNotBlank() } ?: defaultRealtimeTokenUrl
+
+    fun resolveRealtimeEnabled(prefs: SharedPreferences): Boolean {
+        val on = if (prefs.contains(KEY_REALTIME_ENABLED)) {
+            prefs.getBoolean(KEY_REALTIME_ENABLED, defaultRealtimeEnabled)
+        } else {
+            defaultRealtimeEnabled
+        }
+        return on && resolveRealtimeTokenUrl(prefs).isNotBlank()
+    }
+
+    fun resolveRealtimeModel(prefs: SharedPreferences): String =
+        prefs.getString(KEY_REALTIME_MODEL, null)?.takeIf { it.isNotBlank() } ?: defaultRealtimeModel
+
+    fun resolveRealtimeVoice(prefs: SharedPreferences): String =
+        prefs.getString(KEY_REALTIME_VOICE, null)?.takeIf { it.isNotBlank() } ?: defaultRealtimeVoice
+
     fun isConfigured(prefs: SharedPreferences): Boolean =
         resolveServer(prefs).isNotBlank() && resolveUser(prefs).isNotBlank()
 
@@ -70,6 +100,10 @@ object SipConfig {
         val localServer: Boolean,
         val autoconnect: Boolean,
         val outboundTarget: String,
+        val realtimeEnabled: Boolean,
+        val realtimeTokenUrl: String,
+        val realtimeModel: String,
+        val realtimeVoice: String,
     )
 
     fun resolve(prefs: SharedPreferences): Resolved = Resolved(
@@ -80,5 +114,9 @@ object SipConfig {
         localServer = resolveLocalServer(prefs),
         autoconnect = resolveAutoconnect(prefs),
         outboundTarget = resolveOutboundTarget(prefs),
+        realtimeEnabled = resolveRealtimeEnabled(prefs),
+        realtimeTokenUrl = resolveRealtimeTokenUrl(prefs),
+        realtimeModel = resolveRealtimeModel(prefs),
+        realtimeVoice = resolveRealtimeVoice(prefs),
     )
 }

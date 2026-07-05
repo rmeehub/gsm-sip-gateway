@@ -5,8 +5,11 @@ import android.os.Build
 import android.telecom.Call
 import android.util.Log
 import com.callagent.gateway.RootShell
+import com.callagent.gateway.SipConfig
 import com.callagent.gateway.audio.MicIsolationGuard
 import com.callagent.gateway.gsm.GsmCallManager
+import com.callagent.gateway.realtime.OpenAiRealtimeClient
+import com.callagent.gateway.rtp.MediaTransport
 import com.callagent.gateway.rtp.RtpPacket
 import com.callagent.gateway.rtp.RtpSession
 import com.callagent.gateway.sip.SipCall
@@ -47,6 +50,14 @@ class CallOrchestrator(
     private var activeGsmCall: Call? = null
     @Volatile private var diallerInitiated = false
     @Volatile private var lastStateChangeTime = 0L
+
+    // WebSocket-direct (OpenAI Realtime) mode: set when an inbound GSM call is
+    // answered in WS mode; onGsmCallActive then opens the WS instead of SIP.
+    @Volatile private var wsBridgePending = false
+
+    /** Fresh realtime/SIP config read from prefs (may change between calls). */
+    private fun resolveRealtime(): SipConfig.Resolved =
+        SipConfig.resolve(SipConfig.openPrefs(context))
 
     // Pending RTP info: saved when SIP answers before GSM is picked up.
     // onGsmCallActive reads these to start RTP immediately after GSM pickup.
@@ -190,6 +201,16 @@ class CallOrchestrator(
         activeGsmCall = call
         listener?.onStateChanged(bridgeState, "GSM call from $number")
 
+        if (resolveRealtime().realtimeEnabled) {
+            // WS-direct mode: no SIP peer. Answer GSM now; onGsmCallActive opens
+            // the OpenAI Realtime WebSocket once the call is active (so caller
+            // audio is capturable). Caller hears normal ringing until then.
+            wsBridgePending = true
+            Log.i(TAG, "GSM ringing from $number — WS mode: answering, will connect OpenAI Realtime on active")
+            Thread({ GsmCallManager.answerCall(call) }, "WS-AnswerGsm").start()
+            return
+        }
+
         // Don't answer GSM yet — place SIP call to Asterisk first.
         // When the agent answers on SIP, we'll answer GSM so the caller
         // hears the agent immediately with no dead air.
@@ -202,6 +223,12 @@ class CallOrchestrator(
     override fun onGsmCallActive(call: Call) {
         Log.i(TAG, "GSM call active")
         activeGsmCall = call
+
+        if (wsBridgePending) {
+            wsBridgePending = false
+            Thread({ startWsBridge(call) }, "WS-Start").start()
+            return
+        }
 
         when (bridgeState) {
             BridgeState.SIP_CALLING, BridgeState.SIP_RINGING -> {
@@ -447,6 +474,39 @@ class CallOrchestrator(
         }, "SIP-Timeout").start()
     }
 
+    // ── WS-direct flow (GSM → OpenAI Realtime) ─────────
+
+    /**
+     * Inbound GSM call answered in WS mode: open the OpenAI Realtime WebSocket
+     * and start the audio pump. No SIP peer, no RTP/UDP — [RtpSession] runs with
+     * a [MediaTransport] so caller audio streams up as input_audio_buffer.append
+     * and the agent's μ-law audio is injected into the GSM uplink.
+     */
+    private fun startWsBridge(gsmCall: Call) {
+        val cfg = resolveRealtime()
+        Log.i(TAG, "WS bridge: GSM active — connecting OpenAI Realtime " +
+            "(model=${cfg.realtimeModel} voice=${cfg.realtimeVoice} token=${cfg.realtimeTokenUrl})")
+        bridgeState = BridgeState.SIP_CALLING
+        listener?.onStateChanged(bridgeState, "Connecting OpenAI Realtime (${cfg.realtimeVoice})")
+
+        val transport = OpenAiRealtimeClient(
+            tokenUrl = cfg.realtimeTokenUrl,
+            model = cfg.realtimeModel,
+            voice = cfg.realtimeVoice,
+            instructions = OpenAiRealtimeClient.DEFAULT_INSTRUCTIONS,
+        )
+        // No remote UDP endpoint in WS mode; PCMU keeps the codec path on μ-law.
+        startRtp(0, "openai-ws", 0, RtpPacket.PT_PCMU, transport)
+
+        if (bridgeState == BridgeState.IDLE || bridgeState == BridgeState.TEARING_DOWN) {
+            Log.w(TAG, "Bridge torn down during WS setup — not transitioning to BRIDGED")
+            return
+        }
+        bridgeState = BridgeState.BRIDGED
+        listener?.onStateChanged(bridgeState, "Bridged (OpenAI Realtime)")
+        Log.i(TAG, "OpenAI Realtime bridge established")
+    }
+
     // ── Outbound flow (SIP → GSM) ──────────────────────
 
     private fun handleOutboundFlow(sipCall: SipCall, gsmDestination: String) {
@@ -493,7 +553,8 @@ class CallOrchestrator(
     // ── RTP ─────────────────────────────────────────────
 
     private fun startRtp(localPort: Int, remoteAddr: String, remotePort: Int,
-                         payloadType: Int = RtpPacket.PT_PCMA) {
+                         payloadType: Int = RtpPacket.PT_PCMA,
+                         transport: MediaTransport? = null) {
         wiredRtpAddr = remoteAddr
         wiredRtpPort = remotePort
         // Re-assert RECORD_AUDIO appops SYNCHRONOUSLY before AudioRecord
@@ -518,7 +579,7 @@ class CallOrchestrator(
         }
 
         activeRtpSession?.stop()
-        val session = RtpSession(context, localPort, remoteAddr, remotePort, payloadType)
+        val session = RtpSession(context, localPort, remoteAddr, remotePort, payloadType, transport)
         session.listener = object : RtpSession.Listener {
             override fun onRtpStarted() {
                 Log.i(TAG, "RTP session started")
@@ -558,6 +619,7 @@ class CallOrchestrator(
         if (bridgeState == BridgeState.IDLE || bridgeState == BridgeState.TEARING_DOWN) return
         bridgeState = BridgeState.TEARING_DOWN
         diallerInitiated = false
+        wsBridgePending = false
         Log.i(TAG, "Tearing down bridge: $reason")
 
         try {
