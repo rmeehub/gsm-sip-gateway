@@ -655,6 +655,10 @@ class RtpSession(
                         if (captureRate == 8000) PcmaCodec.encode8k(pcmBuf)
                         else PcmaCodec.encode(pcmBuf)
                     }
+                    RtpPacket.PT_PCMU -> {
+                        if (captureRate == 8000) PcmuCodec.encode8k(pcmBuf)
+                        else PcmuCodec.encode(pcmBuf)
+                    }
                     else -> {
                         val pcm16k = if (captureRate == 8000) upsample8kTo16k(pcmBuf) else pcmBuf
                         g722Encoder.encode(pcm16k)
@@ -867,6 +871,10 @@ class RtpSession(
                     RtpPacket.PT_PCMA -> {
                         if (playbackRate == 8000) PcmaCodec.decode8k(encoded)
                         else PcmaCodec.decode(encoded)
+                    }
+                    RtpPacket.PT_PCMU -> {
+                        if (playbackRate == 8000) PcmuCodec.decode8k(encoded)
+                        else PcmuCodec.decode(encoded)
                     }
                     else -> g722Decoder.decodeToBytes(encoded)
                 }

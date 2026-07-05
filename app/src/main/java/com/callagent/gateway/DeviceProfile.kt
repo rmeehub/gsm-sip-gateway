@@ -520,11 +520,15 @@ data class DeviceProfile(
                     // Without this the AOC DSP routes nothing into audio_incall_cap_0
                     // and AudioRecord(VOICE_CALL) reads all-zero PCM.
                     // ENUM values: Off / UL / DL / UL_DL / 3MIC.
-                    // UL_DL: captures both uplink (caller voice) and downlink.
-                    // Pure UL was too sparse — GSM DTX/VAD causes uplink gaps
-                    // (91/1187 frames). With playbackToTelephony=true, agent audio
-                    // goes via EP6 INCALL_TX, not through this buffer, so the
-                    // downlink component here is the GSM modem's downlink — no echo.
+                    // NOTE (measured 2026-07-04): on this Pixel 7 over a VoLTE/IMS
+                    // call, NO value here yields caller audio — audio_incall_cap_0
+                    // reads all-zero under UL/DL/UL_DL, with mic muted or unmuted,
+                    // and with INCALL_RX Mixer IMSV on. `AoC Modem Sink Channel
+                    // Bitmap`=0 during the live call: the modem's call audio never
+                    // traverses the AOC DSP where this tap lives. Injection (EP6→
+                    // INCALL_TX) works, so the bridge is half-duplex on VoLTE.
+                    // This tap is expected to populate only on circuit-switched
+                    // calls; kept at UL_DL for that case. See CLAUDE.md.
                     append("tinymix 'Incall Capture Stream0' UL_DL 2>/dev/null; ")
                     // Enable INCALL playback stream (opens modem TX path)
                     append("tinymix 'Incall Playback Stream0' 1 2>/dev/null; ")
@@ -558,7 +562,7 @@ data class DeviceProfile(
                 captureGain = 4,
                 playbackGain = 2,
                 voiceCallVolPercent = 70,
-                noiseGateThreshold = 15,   // UL capture on aoc-snd-card has a low noise floor
+                noiseGateThreshold = 3,   // UL capture on aoc-snd-card is quiet; 3 passes speech, gates noise
                 echoGateThreshold = 300,
                 doubleTalkRatio = 1.5f,
             ),

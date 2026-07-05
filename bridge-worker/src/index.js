@@ -60,8 +60,9 @@ const worker = {
     }
 
     // TwiML returned to Twilio when the SIP domain receives an inbound INVITE.
-    // Bridges the call to the OpenAI Realtime SIP connector via the Elastic SIP
-    // Trunk, with dual-channel call recording preserved for evidence.
+    // Bridges the call to the OpenAI Realtime SIP connector via <Dial><Sip>.
+    // Twilio acts as a B2BUA and creates a fresh INVITE in its own format
+    // (which OpenAI accepts), unlike SignalWire's direct INVITE which is rejected.
     //
     // answerOnBridge="true": with a SIP inbound leg Twilio answers the gateway
     // immediately by default and plays ringback while the <Dial> target rings —
@@ -70,13 +71,17 @@ const worker = {
     // spurious ringback so the call stays bridged to the agent with silence-free
     // audio once connected.
     if (request.method === "GET" && url.pathname === "/twiml") {
-      const dialNumber = env.TRUNK_DIAL_NUMBER;
+      const projectId = env.OPENAI_PROJECT_ID;
+      if (!projectId) {
+        return new Response("OPENAI_PROJECT_ID not configured", { status: 500 });
+      }
+      const sipUri = `sip:${projectId}@sip.api.openai.com;transport=tls`;
       const callback = `https://${url.host}/recording`;
       const twiml =
         `<?xml version="1.0" encoding="UTF-8"?>\n` +
         `<Response>\n` +
-        `  <Dial answerOnBridge="true" callerId="${dialNumber}" record="record-from-answer-dual" recordingStatusCallback="${callback}" trim="do-not-trim">\n` +
-        `    <Number>${dialNumber}</Number>\n` +
+        `  <Dial answerOnBridge="true" record="record-from-answer-dual" recordingStatusCallback="${callback}" trim="do-not-trim">\n` +
+        `    <Sip>${sipUri}</Sip>\n` +
         `  </Dial>\n` +
         `</Response>`;
       return new Response(twiml, {
@@ -95,6 +100,127 @@ const worker = {
       const callId = request.headers.get("x-signalwire-call-id") || "";
       console.log(`SWML ${request.method} from=${fromHeader} call_id=${callId}`);
       return swmlBridgeResponse(env, url);
+    }
+
+    // SWML verification endpoint (no OpenAI leg): answer, stereo-record the SIP
+    // leg, stay silent 12s (window for the caller-side known phrase to land on
+    // the inbound channel untainted), speak a known SIP-side phrase, then hold.
+    // Point the Domain App here for gateway content-ID audio verification per
+    // CLAUDE.md "Verification discipline" — the stereo recording separates
+    // gateway→SW (caller capture proof) from SW→gateway (injection source).
+    if (
+      (request.method === "GET" || request.method === "POST") &&
+      url.pathname === "/swml-verify"
+    ) {
+      const recCallback = `https://${url.host}/sw-recording`;
+      const swml = {
+        version: "1.0.0",
+        sections: {
+          main: [
+            { answer: { max_duration: 600 } },
+            { record_call: { format: "wav", stereo: true, direction: "both", status_url: recCallback } },
+            { play: { urls: ["silence:12.0"] } },
+            { play: { urls: ["say:SIP side verification. Purple elephant token four two. Purple elephant token four two."] } },
+            // silence:90 was observed to terminate after ~12s (SWML capped it);
+            // chain 12s blocks to hold the call ~72s after phrase B instead.
+            { play: { urls: ["silence:12.0"] } },
+            { play: { urls: ["silence:12.0"] } },
+            { play: { urls: ["silence:12.0"] } },
+            { play: { urls: ["silence:12.0"] } },
+            { play: { urls: ["silence:12.0"] } },
+            { play: { urls: ["silence:12.0"] } },
+          ],
+        },
+      };
+      return new Response(JSON.stringify(swml), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
+    // SWML: answer + stereo record + pure silence (~30s). SIP side stays mute so
+    // anything on the inbound channel is either caller audio or gateway self-noise.
+    // Note: SignalWire tears these SWML calls down at ~32s regardless of script,
+    // so tests must complete within ~30s of answer.
+    if (
+      (request.method === "GET" || request.method === "POST") &&
+      url.pathname === "/swml-verify-silent"
+    ) {
+      const recCallback = `https://${url.host}/sw-recording`;
+      const swml = {
+        version: "1.0.0",
+        sections: {
+          main: [
+            { answer: { max_duration: 600 } },
+            { record_call: { format: "wav", stereo: true, direction: "both", status_url: recCallback } },
+            { play: { urls: ["silence:12.0", "silence:12.0", "silence:12.0"] } },
+          ],
+        },
+      };
+      return new Response(JSON.stringify(swml), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
+    // LaML: caller plays a loud 1 kHz tone. Decisive isolation test — a 1 kHz
+    // spectral spike in the gateway's incall capture proves the caller's DOWNLINK
+    // reaches an AP-capturable PCM (vs. mic/room noise, which is broadband).
+    if (
+      (request.method === "GET" || request.method === "POST") &&
+      url.pathname === "/caller-tone-laml"
+    ) {
+      const mp3 = `https://${url.host}/tone1k.mp3`;
+      const laml =
+        `<?xml version="1.0" encoding="UTF-8"?>\n` +
+        `<Response>\n` +
+        `  <Pause length="4"/>\n` +
+        `  <Play>${mp3}</Play>\n` +
+        `  <Play>${mp3}</Play>\n` +
+        `  <Pause length="20"/>\n` +
+        `</Response>`;
+      return new Response(laml, {
+        status: 200,
+        headers: { "Content-Type": "application/xml" },
+      });
+    }
+
+    // LaML: caller-side <Record> to prove SIP-side audio reaches the GSM caller's
+    // ear. Pair with /swml-verify (phrase B at t=12). Records what the caller hears.
+    if (
+      (request.method === "GET" || request.method === "POST") &&
+      url.pathname === "/caller-record-laml"
+    ) {
+      const laml =
+        `<?xml version="1.0" encoding="UTF-8"?>\n` +
+        `<Response>\n` +
+        `  <Record playBeep="false" maxLength="28" timeout="28" trim="do-not-trim"/>\n` +
+        `</Response>`;
+      return new Response(laml, {
+        status: 200,
+        headers: { "Content-Type": "application/xml" },
+      });
+    }
+
+    // LaML for the SignalWire caller leg of the isolation test. Timeline vs the
+    // /swml-verify SIP side (silence 12s → phrase B → silence): caller stays
+    // silent through the both-silent window (0-12s, measures self-noise) and the
+    // phrase-B window (12-20s, measures echo), speaks phrase A at 25s, then holds.
+    if (
+      (request.method === "GET" || request.method === "POST") &&
+      url.pathname === "/caller-verify-laml"
+    ) {
+      const laml =
+        `<?xml version="1.0" encoding="UTF-8"?>\n` +
+        `<Response>\n` +
+        `  <Pause length="5"/>\n` +
+        `  <Say>Gateway caller check. Green banana seven seven zero. Green banana seven seven zero. Green banana seven seven zero.</Say>\n` +
+        `  <Pause length="45"/>\n` +
+        `</Response>`;
+      return new Response(laml, {
+        status: 200,
+        headers: { "Content-Type": "application/xml" },
+      });
     }
 
     // SWML for SignalWire outbound PSTN test calls: hold the A-leg while the
@@ -236,18 +362,42 @@ function swmlBridgeResponse(env, url) {
   if (!projectId) {
     return new Response("OPENAI_PROJECT_ID not configured", { status: 500 });
   }
-  const sipUri = `sip:${projectId}@sip.api.openai.com;transport=tls`;
+  const twilioSipDomain = env.TWILIO_SIP_DOMAIN || "safwatly.sip.twilio.com";
+  const twilioSipUser = env.TWILIO_SIP_USER || "safwatly";
+  const twilioSipPass = env.TWILIO_SIP_PASS;
   const recCallback = `https://${url.host}/sw-recording`;
+
+  // Route through Twilio SIP domain → TwiML → <Dial><Sip> → OpenAI.
+  // Twilio's INVITE format is known to work with OpenAI; SignalWire's direct INVITE is rejected.
+  const sipUri = `sip:${twilioSipUser}@${twilioSipDomain}`;
   const swml = {
     version: "1.0.0",
     sections: {
       main: [
-        { answer: {} },
+        { answer: { max_duration: 14400 } },
         { record_call: { format: "wav", stereo: true, direction: "both", status_url: recCallback } },
-        { connect: { to: sipUri } },
+        {
+          connect: {
+            to: sipUri,
+            from: "%{call.from}",
+            timeout: 300,
+            max_duration: 14400,
+            session_timeout: 14400,
+            answer_on_bridge: false,
+            codecs: "PCMU,PCMA",
+          },
+        },
       ],
     },
   };
+
+  if (twilioSipPass) {
+    swml.sections.main[2].connect.auth = {
+      username: twilioSipUser,
+      password: twilioSipPass,
+    };
+  }
+
   return new Response(JSON.stringify(swml), {
     status: 200,
     headers: { "Content-Type": "application/json" },

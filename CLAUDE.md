@@ -13,6 +13,14 @@ The gateway is **SIP-agnostic**: it speaks SIP/RTP to whatever peer is configure
 - **Modem TX / uplink / INCALL_TX** — audio going TO the calling phone; the SIP side's audio is injected here.
 - **Mic isolation** — the gateway must be a pure relay; its physical mic must never be audible on either leg. **Solved** — `MicIsolationGuard` (mutes the mic via mixer ops, then measures capture RMS with playback silent and refuses to enter BRIDGED if it leaks). Verified live: `mic=false` in RTP-STATS, `echo=0`.
 
+## Known unknowns (honest state)
+
+These look answered in the commit log but are **not actually verified**. Treat them as open until positively confirmed; do not build on top of the assumption that any of these is settled. See [Verification discipline](#verification-discipline) for how to close them.
+
+- **RESOLVED (2026-07-04, by content identification): caller audio is NOT captured on VoLTE, and cannot be via the incall path.** Isolation test — caller (SignalWire leg) plays a known phrase / 1 kHz tone; SIP side silent. Result: the caller's audio is absent from **every** AP-accessible capture PCM (`audio_incall_cap_0/1/2`, `audio_android_aec`, `audio_voip_tx`, EP captures) under **every** `Incall Capture Stream0` value (`UL`/`DL`/`UL_DL`), mic muted or unmuted, and with `INCALL_RX Mixer IMSV` on. `AoC Modem Sink Channel Bitmap = 0` throughout a live bridged call: the modem's VoLTE/IMS call audio never traverses the AOC DSP where the incall capture tap lives. Even the gateway's **own** injected uplink (which the caller demonstrably hears) does not appear in the capture buffer, so the tap simply isn't fed. **The reverse direction works** — SIP → gateway → modem-TX injection → caller is content-verified (caller cleanly heard the SIP-side phrase). So the bridge is **half-duplex on VoLTE**. The incall capture tap is expected to populate only on **circuit-switched** calls; the SIM in use (Freedom, MNC 302490) is VoLTE-only with no 2G/3G CS fallback, so on this SIM caller-capture is impossible via this mechanism. Fixing caller-capture requires either a CS-capable SIM/carrier or a different IMS-media capture path — not another mixer value. Test harness: `bridge-worker` `/swml-verify`, `/swml-verify-silent`, `/caller-verify-laml`, `/caller-tone-laml`, `/caller-record-laml`.
+- **Pixel 7 `Incall Capture Stream0` value — moot on VoLTE (see above).** Value is kept at `UL_DL` (= HEAD) for the circuit-switched case, but on VoLTE no value works, so this is no longer the pacing item. Do not churn it further chasing VoLTE caller-capture; the blocker is upstream (modem audio not in the AOC), not the tap value.
+- **OpenAI-leg SIP routing is unsettled.** Whether the SIP side should reach OpenAI Realtime directly (e.g. SignalWire `connect → sip:…@sip.api.openai.com`) or be re-routed through Twilio's SIP domain is not settled; the SignalWire-direct INVITE has been observed to be rejected, but that observation is not fully diagnosed. Don't assume either path is correct without re-verifying.
+
 ## Build & Install
 
 Prereq: run `sudo ./setup.sh` once to install a JDK 17+ and the Android SDK (auto-detects `openjdk-21-jdk` on Debian 13/trixie, else `openjdk-17-jdk`).
@@ -82,6 +90,22 @@ adb logcat -d -s MicCapabilityGuard:* BootReceiver:* | tail -20   # root relaunc
 
 `VOICE_DOWNLINK` is never policy-silenced (it bypasses the appop check), but on the Pixel 7 it routes to an empty capture device at the HAL level — the native-ALSA bypass exists for direct downlink capture independent of this path.
 
+## Verification discipline
+
+The history of this repo includes long stretches of `Incall Capture Stream0` and gate thresholds being flipped back and forth (`DL` ↔ `UL` ↔ `UL_DL`), each change committed with a confident rationale that the next change contradicted. The common cause was **acting on inference instead of measurement**. Before changing anything about audio capture, routing, gates, or thresholds, follow these rules:
+
+1. **The test rig lies.** A Twilio/SignalWire test call that plays audio into the call (`<Play>`, `<Say>`, an MP3) inflates the *downlink* capRMS. A capture value of `DL` or `UL_DL` will then show a huge `capRMS` that is reading the **test playback**, not the caller's voice. Never conclude "caller capture works" from a test call that injects audio. This exact artifact once "proved" `DL` worked (`capRMS`≈18k) and seeded sessions of contradictory conclusions.
+
+2. **The only positive proof of caller-capture is content identification.** Mute the downlink/agent leg, have the calling phone speak a known phrase or play a distinctive tone, and confirm that phrase/tone is present on the gateway's uplink channel — via the bridge-worker stereo recording (left = gateway uplink, right = OpenAI downlink), a Whisper transcription, or a spectral match. `capRMS > 0` and `tx`/`rx` counters advancing mean *some* audio flows; they do **not** mean it is the caller's audio.
+
+3. **Isolation-test before AND after a change.** To attribute a symptom to a leg, mute one leg at a time and watch the reading. Don't change `Incall Capture Stream0`, `noiseGateThreshold`, `echoGateThreshold`, or the capture source on the strength of a single noisy reading — reproduce and isolate first.
+
+4. **Device-model reasoning is a hypothesis, not a conclusion.** "Agent audio takes the EP6 INCALL_TX path so it can't appear in the capture buffer" is the kind of claim that sounds authoritative and has been wrong on this device. Measure it (mute the caller; does the loud reading survive?) before treating it as fact.
+
+5. **Don't ship a capture/routing change as "the fix" until caller-capture is positively confirmed** per rule 2. `./deploy.sh` is cheap; unverified commits are what created the `DL`↔`UL`↔`UL_DL` churn. Keep changes in the working tree until verified, then commit with the evidence (recording SID / transcription / RMS table) in the message.
+
+The single most valuable next experiment on this repo is closing the [first known unknown](#known-unknowns-honest-state): confirm, by content identification, whether the caller's voice actually reaches the SIP side. Until that is done, no mixer value can be called correct.
+
 ## Devices
 
 Goal: support as many Android devices as possible. Each device is handled by a `DeviceProfile` (`app/src/main/java/com/callagent/gateway/DeviceProfile.kt`) that encodes its SoC/codec mixer controls. Devices with tuned, tested profiles:
@@ -93,13 +117,21 @@ Goal: support as many Android devices as possible. Each device is handled by a `
 
 Unknown devices auto-detect to a generic Qualcomm / Exynos / Generic profile (Android APIs only, no mixer hacks). To support a new device: add a profile, dump its `tinymix` controls via the in-app diagnostics, and tune the mixer setup/restore commands.
 
-**Pixel 7 requires the uplink-routing mixer fix.** `DeviceProfile.pixel7Tensor()` sets `tinymix 'Incall Capture Stream0' UL` in `mixerSetupCmd`. Without this the AOC DSP routes nothing into the incall capture ring buffer, and `AudioRecord(VOICE_CALL)` reads silence *even after the policy fix above is applied*. The original DL (downlink-only) setting captured the agent's response instead of the caller's voice, causing echo-gated silence on the SIP side. UL routes the caller's uplink into the capture buffer; with `playbackToTelephony=true`, the agent's audio goes via the EP6 INCALL_TX mixer path instead. Both fixes are required on the Pixel 7.
+**Pixel 7 `Incall Capture Stream0` — value is moot on VoLTE (measured 2026-07-04).** `DeviceProfile.pixel7Tensor()` sets this control in `mixerSetupCmd`. It was churned `DL`↔`UL`↔`UL_DL` across ~5 commits on unmeasured rationales. The isolation test (caller plays a known phrase / 1 kHz tone, SIP side silent, content-ID the capture) finally settled it: on a VoLTE call **no value works** — the caller's audio is absent from every AP-capturable PCM regardless of `UL`/`DL`/`UL_DL`, mic mute state, or `INCALL_RX Mixer IMSV`, because the modem's VoLTE audio never reaches the AOC DSP (`AoC Modem Sink Channel Bitmap = 0` during the live call). Kept at `UL_DL` for the circuit-switched case only. See the RESOLVED entry under [Known unknowns](#known-unknowns-honest-state). Do not churn this value further to chase VoLTE caller-capture.
+
+**Codec bug fixed (2026-07-04):** SIP negotiated **PCMU** (`codec=PCMU` in `RTP-STATS`), but `RtpSession` had no `PT_PCMU` case in its encode/decode `when` — PCMU frames fell through to the G.722 branch, garbling audio both ways. Added `PcmuCodec` wiring (`encode8k`/`decode8k`) at both switch sites. After the fix, the SIP→caller direction is content-verified (caller cleanly heard the SIP-side phrase). `PcmuCodec.kt` already existed; it was just never dispatched to.
 
 ## Test rig (SignalWire + bridge-worker)
 
 **Default SIP peer:** SignalWire Domain Application at `loomli-gsm-gateway.dapp.signalwire.com` (username `gateway`, IP auth). Provision with `scripts/signalwire/create-domain-app.sh`; push prefs with `scripts/configure-sip.sh`.
 
 `bridge-worker/` contains a Cloudflare Worker used as **optional downstream** for end-to-end verification (Twilio Elastic SIP Trunk → OpenAI Realtime). It is **not** part of the gateway — it's downstream SIP infrastructure. The gateway itself is SIP-agnostic.
+
+**Why SignalWire, not just Twilio:** the test rig defaults to a SignalWire Domain App as the SIP peer because Twilio-legged test calls would not stay up for long durations — Twilio tears the call down unless it detects media/DTMF early. SignalWire (IP auth, no password) sidesteps that. So SignalWire is "somewhat needed" *as a workaround for Twilio's short-call behavior*, not for any product reason.
+
+**Twilio short-call teardown — the 8-second-key workaround:** the same Twilio duration problem has a second workaround that does **not** need SignalWire: have the gateway play a DTMF tone within the first ~8 seconds of the call connecting, which Twilio reads as "a human answered" and keeps the call up. The primitive already exists (`GsmCallManager.playDtmfTone(c)` / `stopDtmfTone()`) but is **not yet wired to fire automatically on call connect** — wiring it is the known fix if you want to drop SignalWire and use Twilio directly.
+
+**The test rig injects audio — see [Verification discipline](#verification-discipline).** A test call that `<Play>`s or `<Say>`s audio will inflate the gateway's downlink `capRMS` and can make a broken capture path look like it works. Never judge caller-capture from such a call.
 
 ```bash
 cd bridge-worker
