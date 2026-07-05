@@ -69,16 +69,6 @@ class RtpSession(
     private var txTimestamp = 0L
     private val txSsrc = (Math.random() * 0xFFFFFFFFL).toLong()
 
-    // Twilio trial-account keep-alive on the SIP leg.  A *trial* Twilio account
-    // (our test rig: gateway → safwatly.sip.twilio.com → OpenAI) plays a "press
-    // any key to execute your code" prompt on this outbound leg and tears it
-    // down (BYE ~8s) unless a key is pressed.  Send one RFC2833 telephone-event
-    // DTMF (PT 101, offered in our SDP) from the TX thread shortly after audio
-    // starts.  Mirrors the GSM-leg DTMF in GsmCallManager; both legs need it on
-    // a trial account.  Remove/gate once off the Twilio trial account.
-    private var sipDtmfKeepAliveSent = false
-    private val dtmfPayloadType = 101
-
     // Symmetric RTP: latch onto the actual source address of received packets
     @Volatile private var latchedAddr: InetAddress? = null
     @Volatile private var latchedPort: Int = 0
@@ -781,42 +771,12 @@ class RtpSession(
                     txSequence = (txSequence + 1) and 0xFFFF
                     txPacketCount++
                     txTimestamp += 160 // 20ms at 8000Hz RTP clock
-
-                    // Twilio trial keep-alive: press a "key" on the SIP leg ~1.5s in.
-                    if (!sipDtmfKeepAliveSent && txPacketCount >= 75L) {
-                        sipDtmfKeepAliveSent = true
-                        sendDtmfOnSipLeg('1', destAddr, destPort)
-                    }
                 }
             } catch (e: Exception) {
                 if (running.get()) Log.e(TAG, "Capture error: ${e.message}")
             }
         }
         return true  // Normal exit (call ended)
-    }
-
-    /**
-     * Send one DTMF digit on the SIP leg as an RFC 4733 telephone-event burst
-     * (PT [dtmfPayloadType], 3 packets, marker on the first, shared timestamp).
-     * Called from the TX (capture) thread so it shares tx sequence/timestamp/
-     * socket state with the audio sender — no cross-thread races.
-     */
-    private fun sendDtmfOnSipLeg(digit: Char, destAddr: InetAddress, destPort: Int) {
-        try {
-            val seq = com.callagent.gateway.sip.DtmfEvent.sequenceFor(digit)
-            val eventTs = txTimestamp
-            seq.packets.forEachIndexed { i, ev ->
-                val pkt = RtpPacket(dtmfPayloadType, txSequence, eventTs, txSsrc, ev.encode(), marker = (i == 0))
-                val d = pkt.encode()
-                socket?.send(DatagramPacket(d, d.size, destAddr, destPort))
-                txSequence = (txSequence + 1) and 0xFFFF
-            }
-            txTimestamp += 1600 // 200ms telephone-event @ 8kHz
-            Log.i(TAG, "Sent RFC2833 DTMF '$digit' on SIP leg (Twilio trial keep-alive)")
-            listener?.onRtpStats("SIP DTMF '$digit' sent (Twilio trial keep-alive)")
-        } catch (e: Exception) {
-            Log.w(TAG, "SIP DTMF send failed: ${e.message}")
-        }
     }
 
     // ── Receive: RTP recv → jitter buffer ───────────────

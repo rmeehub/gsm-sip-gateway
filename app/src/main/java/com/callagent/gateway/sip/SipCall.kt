@@ -46,6 +46,7 @@ class SipCall(
     var remoteRtpPort: Int = 0
     var remoteRtpAddress: String? = null
     var negotiatedPayloadType: Int = 8 // default PCMA, updated from SDP
+
     /** True once [Listener.onRtpReady] has been invoked for the current remote endpoint */
     @Volatile private var rtpNotified = false
 

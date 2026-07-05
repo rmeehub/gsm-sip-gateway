@@ -205,7 +205,9 @@ class CallOrchestrator(
             // WS-direct mode: no SIP peer. Answer GSM now; onGsmCallActive opens
             // the OpenAI Realtime WebSocket once the call is active (so caller
             // audio is capturable). Caller hears normal ringing until then.
+            // Mute the gateway's own earpiece — pure relay, no local call audio.
             wsBridgePending = true
+            GsmCallManager.muteLocalEarpiece = true
             Log.i(TAG, "GSM ringing from $number — WS mode: answering, will connect OpenAI Realtime on active")
             Thread({ GsmCallManager.answerCall(call) }, "WS-AnswerGsm").start()
             return

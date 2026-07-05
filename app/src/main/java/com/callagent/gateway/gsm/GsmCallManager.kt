@@ -46,36 +46,14 @@ object GsmCallManager {
     /** Set when [batchMixerSetup] finishes; RtpSession waits past this before capture. */
     @Volatile var mixerSetupCompletedAtMs: Long = 0
 
-    private val keepAliveHandler = android.os.Handler(android.os.Looper.getMainLooper())
-    @Volatile private var keepAliveDtmfSent = false
-
     /**
-     * Twilio trial-account keep-alive.  A *trial* Twilio account tears the call
-     * down unless the answering party presses a key within ~7s of connect
-     * ("press any key to execute your code").  A SINGLE keypress is enough —
-     * Twilio starts executing the call flow immediately after the first key —
-     * so send one brief DTMF '1' on the GSM leg (heard by the caller = Twilio)
-     * shortly after the call goes active.  Sending more would just inject stray
-     * DTMF into the already-running flow.  Harmless for non-Twilio peers.
-     * Remove/disable once off the Twilio trial account — CLAUDE.md "8-second-key".
+     * Relay mode: silence the gateway's own earpiece so the caller's voice isn't
+     * audible on the gateway phone. In WS-direct mode the gateway needs no local
+     * call audio (caller is captured via VOICE_DOWNLINK, the agent is injected
+     * via STREAM_MUSIC/incall_music), so STREAM_VOICE_CALL is forced to 0. Set by
+     * the orchestrator before answering; reset on call end.
      */
-    private fun scheduleTwilioTrialKeepAliveDtmf() {
-        if (keepAliveDtmfSent) return
-        keepAliveDtmfSent = true
-        keepAliveHandler.postDelayed({
-            val c = activeCall ?: return@postDelayed
-            if (c.state != Call.STATE_ACTIVE) return@postDelayed
-            try {
-                appLog("Twilio keep-alive: DTMF '1' on GSM leg")
-                c.playDtmfTone('1')
-                keepAliveHandler.postDelayed({
-                    try { c.stopDtmfTone() } catch (_: Exception) {}
-                }, 350L)
-            } catch (e: Exception) {
-                Log.w(TAG, "keep-alive DTMF failed: ${e.message}")
-            }
-        }, 1500L)
-    }
+    @Volatile var muteLocalEarpiece = false
 
     /** Log to both Android logcat AND the app log viewer. */
     private fun appLog(msg: String) {
@@ -127,7 +105,6 @@ object GsmCallManager {
             Call.STATE_ACTIVE -> {
                 Log.i(TAG, "GSM call active: $number")
                 configureAudioBridge()
-                scheduleTwilioTrialKeepAliveDtmf()
                 listener?.onGsmCallActive(call)
             }
         }
@@ -139,7 +116,6 @@ object GsmCallManager {
             activeCall = null
             activeCallState = Call.STATE_DISCONNECTED
         }
-        keepAliveDtmfSent = false
         restoreAudio()
         listener?.onGsmCallEnded(call)
     }
@@ -163,12 +139,10 @@ object GsmCallManager {
             Call.STATE_ACTIVE -> {
                 Log.i(TAG, "GSM call active")
                 configureAudioBridge()
-                scheduleTwilioTrialKeepAliveDtmf()
                 listener?.onGsmCallActive(call)
             }
             Call.STATE_DISCONNECTED -> {
                 Log.i(TAG, "GSM call disconnected")
-                keepAliveDtmfSent = false
                 listener?.onGsmCallEnded(call)
                 if (activeCall == call) {
                     activeCall = null
@@ -359,7 +333,12 @@ object GsmCallManager {
         // Exynos 9820: 80% — no muteVoiceRx, need loud speaker for mic capture.
         // Volume=0 can confuse audio policy into treating call as inactive.
         try {
-            val vcVol = if (profile.audio.voiceCallVolPercent > 0) {
+            val vcVol = if (muteLocalEarpiece) {
+                // Relay mode: mute the local earpiece entirely. Capture uses
+                // VOICE_DOWNLINK and injection uses STREAM_MUSIC, so nothing here
+                // depends on STREAM_VOICE_CALL being audible.
+                0
+            } else if (profile.audio.voiceCallVolPercent > 0) {
                 val maxVc = am.getStreamMaxVolume(AudioManager.STREAM_VOICE_CALL)
                 (maxVc * profile.audio.voiceCallVolPercent / 100).coerceAtLeast(1)
             } else {
@@ -382,8 +361,9 @@ object GsmCallManager {
 
     /** Restore audio state when call ends */
     private fun restoreAudio() {
+        muteLocalEarpiece = false
         if (listener == null) return // Standalone mode
-        
+
         try {
             mixerSetupCompletedAtMs = 0
             // Single su call to restore all mixer controls

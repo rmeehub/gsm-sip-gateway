@@ -1,5 +1,6 @@
 package com.callagent.gateway
 
+import android.media.MediaRecorder
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -140,14 +141,20 @@ class DeviceProfileTest {
         assertFullyPopulated(DeviceProfile.generic())
     }
 
-    // ── Pixel 7 incall-capture routing (silence-bug fix, aad6124) ──
+    // ── Pixel 7 caller capture: VOICE_DOWNLINK, not the AOC 'Incall Capture
+    //    Stream0' tap (settled 2026-07-04; see CLAUDE.md OVERTURNED entry) ──
 
     @Test
-    fun `pixel7 mixer setup routes modem uplink into incall capture`() {
-        val setup = DeviceProfile.pixel7Tensor().mixer.mixerSetupCmd
-        assertTrue(
-            "setup must set Incall Capture Stream0 to UL",
-            setup.contains("tinymix 'Incall Capture Stream0' UL"),
+    fun `pixel7 captures caller via VOICE_DOWNLINK, not the AOC incall-capture tap`() {
+        val profile = DeviceProfile.pixel7Tensor()
+        assertEquals(
+            "Pixel 7 caller capture must use VOICE_DOWNLINK",
+            MediaRecorder.AudioSource.VOICE_DOWNLINK,
+            profile.routing.captureSource,
+        )
+        assertFalse(
+            "the disproven AOC 'Incall Capture Stream0' tap must not be in mixer setup",
+            profile.mixer.mixerSetupCmd.contains("Incall Capture Stream0"),
         )
     }
 
